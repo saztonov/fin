@@ -9,7 +9,8 @@ const objectSchema = z.object({
   code: z
     .string()
     .trim()
-    .regex(/^\d{5}$/, 'Код объекта — ровно 5 цифр'),
+    .min(1, 'Укажите код объекта')
+    .max(5, 'Код объекта — не более 5 символов'),
   name: z.string().trim().min(1, 'Укажите название').max(500),
   address: z.string().trim().max(1000).default(''),
 });

@@ -97,8 +97,11 @@ export function ObjectsTab() {
         >
           <Form.Item
             name="code"
-            label="Код (5 цифр)"
-            rules={[{ required: true, pattern: /^\d{5}$/, message: 'Ровно 5 цифр' }]}
+            label="Код (до 5 символов)"
+            rules={[
+              { required: true, whitespace: true, message: 'Укажите код' },
+              { max: 5, message: 'Не более 5 символов' },
+            ]}
           >
             <Input maxLength={5} style={{ width: 140 }} autoFocus />
           </Form.Item>
