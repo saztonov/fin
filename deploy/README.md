@@ -31,32 +31,41 @@
 
 Выполняется владельцем кластера (через консоль/CLI Yandex Cloud или под ролью-владельцем БД):
 
+На backend-vps-1 используется роль **`fin_id`** (и для runtime, и для миграций на этапе 1).
+Ниже — вариант для WebSQL / владельца кластера, если БД и пользователь уже созданы:
+
 ```sql
-CREATE DATABASE fin;
-
-CREATE USER fin_runtime WITH PASSWORD '...' CONNECTION LIMIT 40;
-CREATE USER fin_migration WITH PASSWORD '...';
-
-\c fin
-
--- расширения — вручную, ДО первой миграции (в SQL-миграциях их нет намеренно, см. §8;
--- тот же SQL лежит в deploy/initdb/01-extensions.sql — используется для dev-БД в Docker)
+-- выполнить, будучи подключенным к БД fin (не к postgres)
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 CREATE EXTENSION IF NOT EXISTS citext;
 
-GRANT USAGE ON SCHEMA public TO fin_runtime;
+GRANT CONNECT ON DATABASE fin TO fin_id;
+GRANT USAGE, CREATE ON SCHEMA public TO fin_id;
 
--- объекты создаёт fin_migration (DDL); правами на них rantime-роль наделяется по умолчанию:
-ALTER DEFAULT PRIVILEGES FOR ROLE fin_migration IN SCHEMA public
-  GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO fin_runtime;
-ALTER DEFAULT PRIVILEGES FOR ROLE fin_migration IN SCHEMA public
-  GRANT USAGE, SELECT ON SEQUENCES TO fin_runtime;
+-- на уже существующие объекты (если появились до выдачи прав)
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO fin_id;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO fin_id;
+
+-- на будущие объекты, которые создаст сама fin_id (миграции)
+ALTER DEFAULT PRIVILEGES FOR ROLE fin_id IN SCHEMA public
+  GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO fin_id;
+ALTER DEFAULT PRIVILEGES FOR ROLE fin_id IN SCHEMA public
+  GRANT USAGE, SELECT ON SEQUENCES TO fin_id;
+
+-- бюджет соединений (§7): api+worker DB_POOL_MAX=10 → до ×2 при rolling ≈ 40
+ALTER ROLE fin_id CONNECTION LIMIT 40;
 ```
 
-Бюджет соединений (§7): `DB_POOL_MAX=10` у api и у worker, при перекрытии старого/нового
-контейнера на обновлении — до ×2 каждый ≈ 40, плюс миграции/сид — укладывается в
-`CONNECTION LIMIT 40` выше. При необходимости поднять лимит правкой `ALTER ROLE fin_runtime
-CONNECTION LIMIT ...`.
+Если роли ещё нет / БД ещё нет (владелец кластера):
+
+```sql
+CREATE DATABASE fin;
+CREATE USER fin_id WITH PASSWORD '...' CONNECTION LIMIT 40;
+-- затем \c fin и блок с EXTENSION/GRANT выше
+```
+
+Опционально позже можно выделить DDL-роль `fin_migration` и оставить `fin_id` только на DML
+(см. исходный dual-role вариант в истории репо) — для первого стенда не обязательно.
 
 ## 2. Конфиг и секреты на хосте
 

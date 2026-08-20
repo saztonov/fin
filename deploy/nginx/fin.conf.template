@@ -27,16 +27,22 @@ server {
     proxy_read_timeout 120s;
     proxy_send_timeout 120s;
 
-    add_header Strict-Transport-Security "max-age=31536000" always;
+    add_header Strict-Transport-Security "max-age=63072000" always;
     add_header X-Content-Type-Options "nosniff" always;
     add_header Referrer-Policy "strict-origin-when-cross-origin" always;
     add_header X-Frame-Options "DENY" always;
+
+    # Динамический резолвинг имён контейнеров (Docker DNS) — переживает recreate,
+    # как у соседних порталов на этом VPS (estimat/zakupki/billhub/technic).
+    resolver 127.0.0.11 valid=30s ipv6=off;
+    set $api fin-api;
+    set $web fin-web;
 
     # X-Forwarded-For ПЕРЕЗАПИСЫВАЕТСЯ ($remote_addr), не дополняется: backend работает
     # с trustProxy:true и считает rate-limit по IP — с $proxy_add_x_forwarded_for клиент
     # мог бы подставить в заголовок произвольный IP.
     location /api/ {
-        proxy_pass http://fin-api:3000;
+        proxy_pass http://$api:3000;
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-For $remote_addr;
         proxy_set_header X-Forwarded-Proto $scheme;
@@ -47,7 +53,7 @@ server {
     # (deploy-fin.sh exec в fin-api), публичный health-эндпоинт порталу не нужен.
 
     location / {
-        proxy_pass http://fin-web:80;
+        proxy_pass http://$web:80;
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-For $remote_addr;
         proxy_set_header X-Forwarded-Proto $scheme;
