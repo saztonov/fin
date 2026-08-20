@@ -1,0 +1,22 @@
+# Dev-БД в Docker (альтернатива `npm run db:dev`, если Docker установлен)
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ks
+      POSTGRES_PASSWORD: ks
+      POSTGRES_DB: ks
+    command: ['postgres', '-c', 'shared_buffers=128MB']
+    ports:
+      - '127.0.0.1:5439:5432'
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./initdb:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ks -d ks']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  pg_data:

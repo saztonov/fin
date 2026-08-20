@@ -1,0 +1,24 @@
+{
+  "name": "ks-portal",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Портал КС — учёт выполнения строительных работ (КС-2/КС-6 на базе ПСДЦ)",
+  "workspaces": [
+    "backend",
+    "frontend"
+  ],
+  "scripts": {
+    "db:dev": "npm run db:dev -w backend",
+    "migrate": "npm run migrate -w backend",
+    "seed": "npm run seed -w backend",
+    "dev:api": "npm run dev:api -w backend",
+    "dev:worker": "npm run dev:worker -w backend",
+    "dev:web": "npm run dev -w frontend",
+    "build": "npm run build -w backend && npm run build -w frontend",
+    "test": "npm run test -w backend",
+    "typecheck": "npm run typecheck -w backend && npm run typecheck -w frontend"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
