@@ -43,11 +43,20 @@ export const appTheme: ThemeConfig = {
       headerHeight: 56,
       headerPadding: '0 24px',
       bodyBg: '#F6F7F9',
+      siderBg: '#FFFFFF',
     },
     Menu: {
       itemColor: '#5A6472',
       horizontalItemSelectedColor: '#2F54EB',
       activeBarHeight: 2,
+      // вертикальное меню сайдбара
+      itemSelectedColor: '#2F54EB',
+      itemSelectedBg: '#EFF2FF',
+      itemHoverBg: '#F4F6FB',
+      itemBorderRadius: 6,
+      itemMarginInline: 8,
+      itemHeight: 40,
+      iconSize: 16,
     },
     Table: {
       headerBg: '#FBFBFD',

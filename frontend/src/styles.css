@@ -95,11 +95,12 @@ body,
   text-overflow: ellipsis;
 }
 
-/* страница КС занимает всю высоту, скроллится только таблица */
+/* страница КС занимает всю высоту, скроллится только таблица
+   (32 = padding Layout.Content сверху и снизу; верхней шапки нет — навигация в сайдбаре) */
 .ks-page {
   display: flex;
   flex-direction: column;
-  height: calc(100vh - 56px - 32px);
+  height: calc(100vh - 32px);
   gap: 12px;
 }
 .ks-page__table {
