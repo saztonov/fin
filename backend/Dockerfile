@@ -1,8 +1,12 @@
-# Один образ, три команды: api | worker | migrate (корпстандарт §19: immutable image, без git pull/npm install на VPS)
+# Один образ, три команды: api | worker | migrate.
+# Отступление от корпстандарта §19 (этап 1, как у соседних порталов на этом VPS):
+# образ собирается на самой VPS (git pull + docker compose build), без Container Registry.
 FROM node:24-alpine AS deps
 WORKDIR /app
 COPY package.json package-lock.json* ./
 COPY backend/package.json backend/
+# манифест frontend обязателен: npm ci читает все workspaces из корневого package.json
+COPY frontend/package.json frontend/
 RUN npm ci --workspace backend --include-workspace-root=false --omit=dev --ignore-scripts \
     && cp -R node_modules /prod_node_modules \
     && npm ci --workspace backend --include-workspace-root=false --ignore-scripts
@@ -22,6 +26,9 @@ COPY --from=deps /prod_node_modules node_modules
 COPY --from=build /app/backend/dist backend/dist
 COPY backend/drizzle backend/drizzle
 COPY backend/package.json backend/package.json
+# каталог под named volume создаём заранее с владельцем ks,
+# иначе volume инициализируется root'ом и запись из-под ks невозможна
+RUN mkdir -p /app/.data/uploads && chown -R ks:ks /app/.data
 USER ks
 WORKDIR /app/backend
 # api:     node dist/api/index.js

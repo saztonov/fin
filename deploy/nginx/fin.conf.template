@@ -1,0 +1,55 @@
+# Вклад портала «КС» (fin) в общий ingress /opt/infra/nginx/conf.d/fin.conf.
+# Домен ещё не выбран — ${FIN_DOMAIN} рендерится при подключении домена (см. deploy/README.md):
+#   FIN_DOMAIN=<домен> envsubst '$FIN_DOMAIN' < deploy/nginx/fin.conf.template \
+#     | sudo tee /opt/infra/nginx/conf.d/fin.conf
+#   docker exec infra-nginx nginx -t && docker exec infra-nginx nginx -s reload
+#
+# fin-api / fin-web — DNS-имена сервисов в общей внешней сети edge
+# (см. deploy/docker-compose.prod.yml). Frontend раздаётся тем же origin, что и API,
+# поэтому CORS не нужен (корпстандарт §23).
+
+server {
+    listen 80;
+    server_name ${FIN_DOMAIN};
+    location /.well-known/acme-challenge/ { root /var/www/certbot; }
+    location / { return 301 https://$host$request_uri; }
+}
+
+server {
+    listen 443 ssl;
+    http2 on;
+    server_name ${FIN_DOMAIN};
+
+    ssl_certificate     /etc/letsencrypt/live/${FIN_DOMAIN}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${FIN_DOMAIN}/privkey.pem;
+
+    client_max_body_size 26m;          # согласовано с UPLOAD_MAX_BYTES
+    proxy_read_timeout 120s;
+    proxy_send_timeout 120s;
+
+    add_header Strict-Transport-Security "max-age=31536000" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+    add_header X-Frame-Options "DENY" always;
+
+    # X-Forwarded-For ПЕРЕЗАПИСЫВАЕТСЯ ($remote_addr), не дополняется: backend работает
+    # с trustProxy:true и считает rate-limit по IP — с $proxy_add_x_forwarded_for клиент
+    # мог бы подставить в заголовок произвольный IP.
+    location /api/ {
+        proxy_pass http://fin-api:3000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Request-Id $request_id;
+    }
+
+    # /health/* наружу не проксируется — деплой проверяет готовность изнутри контейнера
+    # (deploy-fin.sh exec в fin-api), публичный health-эндпоинт порталу не нужен.
+
+    location / {
+        proxy_pass http://fin-web:80;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}

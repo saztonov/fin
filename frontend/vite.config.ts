@@ -10,5 +10,6 @@ export default defineConfig({
       '/health': { target: 'http://127.0.0.1:3000', changeOrigin: false },
     },
   },
-  build: { outDir: 'dist', sourcemap: true },
+  // карты исходников не должны попадать в прод-раздачу (собранный dist уезжает в образ fin-web)
+  build: { outDir: 'dist', sourcemap: false },
 });
