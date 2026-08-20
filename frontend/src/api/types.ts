@@ -59,7 +59,7 @@ export interface PeriodCell {
 export interface GridItemRow {
   type: 'item';
   id: string;
-  kind: 'kvr' | 'nomenclature';
+  kind: 'kvr' | 'nomenclature' | 'subline';
   sectionId: string;
   kvrItemId: string | null;
   kvrCode: string;
@@ -107,6 +107,7 @@ export interface Ks6Grid {
     contractTotal: string;
     executedAmount: string;
     remainderAmount: string;
+    vatMode: 'gross' | 'net';
     vatContract: string;
     vatExecuted: string;
     byPeriod: Record<string, string>;
@@ -155,11 +156,22 @@ export interface ImportFileInfo {
   status: ImportStatus;
   error: string | null;
   createdAt: string;
+  sheetName?: string | null;
   summary?: {
     sections: number;
     kvrItems: number;
     nomenclatureItems: number;
+    sublineItems?: number;
     ks2Columns: number;
+    sheetName?: string;
+    sheetCandidates?: {
+      name: string;
+      state: 'visible' | 'hidden' | 'veryHidden';
+      score: number | null;
+      rows: number | null;
+      periods: number | null;
+    }[];
+    vat?: { rate: number | null; mode: 'gross' | 'net' | null };
     warnings: string[];
   } | null;
 }
@@ -170,7 +182,7 @@ export interface ItemDiff {
   status: ItemDiffStatus;
   staged?: {
     tmpId: string;
-    kind: 'kvr' | 'nomenclature';
+    kind: 'kvr' | 'nomenclature' | 'subline';
     kvrCode: string;
     name: string;
     unit: string;

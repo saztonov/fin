@@ -27,6 +27,7 @@ import {
   useImportPreview,
   useImportStatus,
   useObjects,
+  useReparseImport,
   useUploadImport,
 } from '../../api/hooks';
 import type { ApplyResult, ItemDiff, ItemDiffStatus } from '../../api/types';
@@ -177,7 +178,8 @@ export function ImportWizardPage() {
               </p>
               <p className="ant-upload-text">Перетащите файл .xlsx или нажмите для выбора</p>
               <p className="ant-upload-hint">
-                Принимается только формат .xlsx (без макросов). Лист «{kind === 'ks6' ? 'КС-6' : 'ПСДЦ'}» должен быть видимым.
+                Принимается только формат .xlsx (без макросов). Лист подбирается автоматически —
+                после разбора его можно сменить.
               </p>
             </Upload.Dragger>
             {upload.isPending ? <Spin /> : null}
@@ -215,6 +217,13 @@ export function ImportWizardPage() {
 
       {step === 2 && preview.data ? (
         <Space direction="vertical" size={16} style={{ width: '100%' }}>
+          <SheetPicker
+            importId={importId}
+            objectId={objectId}
+            usedSheet={status.data?.summary?.sheetName ?? status.data?.sheetName ?? null}
+            candidates={status.data?.summary?.sheetCandidates ?? []}
+            vat={status.data?.summary?.vat ?? null}
+          />
           {preview.data.warnings.length > 0 ? (
             <Alert
               type="warning"
@@ -479,5 +488,79 @@ export function ImportWizardPage() {
         />
       ) : null}
     </div>
+  );
+}
+
+interface SheetPickerProps {
+  importId: string | null;
+  objectId: string | null;
+  usedSheet: string | null;
+  candidates: {
+    name: string;
+    state: 'visible' | 'hidden' | 'veryHidden';
+    score: number | null;
+    rows: number | null;
+    periods: number | null;
+  }[];
+  vat: { rate: number | null; mode: 'gross' | 'net' | null } | null;
+}
+
+/**
+ * В книгах заказчиков листов несколько (основной договор и ДС, две ставки НДС,
+ * КС-2 рядом с накопительной ведомостью), поэтому выбранный лист показывается
+ * явно и его можно переключить, не загружая файл заново.
+ */
+function SheetPicker({ importId, objectId, usedSheet, candidates, vat }: SheetPickerProps) {
+  const reparse = useReparseImport(objectId);
+  const { message } = useFeedback();
+  const [sheet, setSheet] = useState<string | null>(null);
+  const options = candidates.map((c) => ({
+    value: c.name,
+    label:
+      `${c.name}${c.state === 'visible' ? '' : ' (скрытый)'}` +
+      (c.periods !== null ? ` — строк ${c.rows ?? 0}, периодов ${c.periods}` : ''),
+  }));
+
+  return (
+    <Card size="small" title="Лист книги">
+      <Space wrap size={12}>
+        <Typography.Text>
+          Разобран лист: <Typography.Text strong>{usedSheet ?? '—'}</Typography.Text>
+        </Typography.Text>
+        {vat?.mode ? (
+          <Typography.Text type="secondary">
+            НДС в файле: {vat.mode === 'net' ? 'без НДС' : `${vat.rate ?? '—'}%`}
+          </Typography.Text>
+        ) : null}
+        {options.length > 1 ? (
+          <>
+            <Select
+              size="small"
+              style={{ minWidth: 320 }}
+              placeholder="Выбрать другой лист"
+              value={sheet}
+              onChange={setSheet}
+              options={options}
+            />
+            <Button
+              size="small"
+              disabled={!sheet || sheet === usedSheet}
+              loading={reparse.isPending}
+              onClick={async () => {
+                if (!importId || !sheet) return;
+                try {
+                  const res = await reparse.mutateAsync({ importId, sheet });
+                  message.success(res.message);
+                } catch (e) {
+                  message.error((e as Error).message);
+                }
+              }}
+            >
+              Перечитать
+            </Button>
+          </>
+        ) : null}
+      </Space>
+    </Card>
   );
 }

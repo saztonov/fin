@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 /** Версия парсера — пишется в import_files.parser_version. */
-export const PARSER_VERSION = '1.0.0';
+export const PARSER_VERSION = '2.0.0';
 
 const numStr = z.string().regex(/^-?\d+(\.\d+)?$/);
 
@@ -9,14 +9,16 @@ export const parsedSectionSchema = z.object({
   tmpId: z.string(),
   parentTmpId: z.string().nullable(),
   name: z.string().min(1),
-  level: z.number().int().min(1).max(3),
+  /** реальные ведомости доходят до 7 уровней (Примавера — колонка «Уровень 7») */
+  level: z.number().int().min(1).max(12),
   rowNumber: z.number().int(),
 });
 
 export const parsedItemSchema = z.object({
   tmpId: z.string(),
   sectionTmpId: z.string(),
-  kind: z.enum(['kvr', 'nomenclature']),
+  /** subline — строки «в т.ч.»: хранятся и показываются, но в суммы не входят */
+  kind: z.enum(['kvr', 'nomenclature', 'subline']),
   kvrTmpId: z.string().nullable(),
   kvrCode: z.string(),
   name: z.string().min(1),
@@ -51,6 +53,25 @@ export const parsedKs2ColumnSchema = z.object({
 
 export const parsedImportSchema = z.object({
   kind: z.enum(['psdc', 'ks6']),
+  /** лист, с которого фактически прочитаны данные */
+  sheetName: z.string(),
+  /** все листы книги — мастер импорта даёт переключиться на другой */
+  sheetCandidates: z
+    .array(
+      z.object({
+        name: z.string(),
+        state: z.enum(['visible', 'hidden', 'veryHidden']),
+        score: z.number().nullable(),
+        rows: z.number().nullable(),
+        periods: z.number().nullable(),
+      }),
+    )
+    .default([]),
+  /** ставка НДС и режим цен, вычитанные из подписей граф; null — не удалось понять */
+  vat: z.object({
+    rate: z.number().nullable(),
+    mode: z.enum(['gross', 'net']).nullable(),
+  }),
   header: z.object({
     contractNumber: z.string().nullable(),
     contractDate: z.string().nullable(),

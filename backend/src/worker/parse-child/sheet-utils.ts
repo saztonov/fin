@@ -1,34 +1,26 @@
-import type ExcelJS from 'exceljs';
+import { SheetGrid, serialToIso } from './xlsx-reader.js';
 
-/** Развёртка значения ячейки exceljs: формулы, rich text, даты. */
-export function rawValue(cell: ExcelJS.Cell): unknown {
-  const v = cell.value;
-  if (v === null || v === undefined) return null;
-  if (typeof v === 'object') {
-    if ('result' in v) return (v as { result: unknown }).result ?? null;
-    if ('richText' in v) {
-      return (v as { richText: { text: string }[] }).richText.map((t) => t.text).join('');
-    }
-    if (v instanceof Date) return v;
-    if ('text' in v) return (v as { text: string }).text;
-    if ('error' in v) return null;
-  }
-  return v;
+/** Текст ячейки с учётом объединений (slave отдаёт значение master). */
+export function cellText(ws: SheetGrid, row: number, col: number): string {
+  const v = ws.get(row, col).value;
+  if (v === null || v === undefined) return '';
+  return String(v).replace(/\s+/g, ' ').trim();
 }
 
-export function cellText(ws: ExcelJS.Worksheet, row: number, col: number): string {
-  const v = rawValue(ws.getRow(row).getCell(col));
+/** Текст только собственной ячейки, без разворота объединений. */
+export function cellTextRaw(ws: SheetGrid, row: number, col: number): string {
+  const v = ws.raw(row, col).value;
   if (v === null || v === undefined) return '';
-  if (v instanceof Date) return v.toISOString().slice(0, 10);
   return String(v).replace(/\s+/g, ' ').trim();
 }
 
 /** Число из ячейки: number, строка с пробелами/NBSP/запятой. null, если не число. */
-export function cellNum(ws: ExcelJS.Worksheet, row: number, col: number): number | null {
-  const v = rawValue(ws.getRow(row).getCell(col));
+export function cellNum(ws: SheetGrid, row: number, col: number): number | null {
+  const cell = ws.get(row, col);
+  const v = cell.value;
   if (v === null || v === undefined || v === '') return null;
   if (typeof v === 'number') return Number.isFinite(v) ? v : null;
-  if (v instanceof Date) return null;
+  if (cell.isDate) return null;
   const s = String(v)
     .replace(/[\s  ]/g, '')
     .replace(',', '.');
@@ -37,10 +29,12 @@ export function cellNum(ws: ExcelJS.Worksheet, row: number, col: number): number
   return Number.isFinite(n) ? n : null;
 }
 
-export function cellDate(ws: ExcelJS.Worksheet, row: number, col: number): string | null {
-  const v = rawValue(ws.getRow(row).getCell(col));
-  if (v instanceof Date) return v.toISOString().slice(0, 10);
-  if (typeof v === 'string') return parseRuDate(v);
+/** ISO-дата из ячейки: датовый формат, русская дата текстом или Excel-серийник. */
+export function cellDate(ws: SheetGrid, row: number, col: number): string | null {
+  const cell = ws.get(row, col);
+  if (cell.isDate && typeof cell.value === 'string') return cell.value;
+  if (typeof cell.value === 'string') return parseRuDate(cell.value);
+  if (typeof cell.value === 'number') return serialToIso(cell.value);
   return null;
 }
 
@@ -56,9 +50,8 @@ export function parseRuDate(s: string): string | null {
   return Number.isNaN(Date.parse(iso)) ? null : iso;
 }
 
-export function isBold(ws: ExcelJS.Worksheet, row: number, col: number): boolean {
-  const font = ws.getRow(row).getCell(col).font;
-  return Boolean(font?.bold);
+export function isBold(ws: SheetGrid, row: number, col: number): boolean {
+  return ws.raw(row, col).bold;
 }
 
 /** Округление денег к строке (2 знака, half-up через toFixed). */
@@ -76,7 +69,7 @@ export function qty6(n: number | null): string | null {
 
 /** Поиск строки по предикату над текстами ячеек. */
 export function findRow(
-  ws: ExcelJS.Worksheet,
+  ws: SheetGrid,
   fromRow: number,
   toRow: number,
   predicate: (texts: (col: number) => string, row: number) => boolean,
@@ -88,9 +81,9 @@ export function findRow(
   return null;
 }
 
-/** Колонка в строке headerRow, чей текст удовлетворяет предикату. */
+/** Колонка в строке row, чей текст удовлетворяет предикату. */
 export function findCol(
-  ws: ExcelJS.Worksheet,
+  ws: SheetGrid,
   row: number,
   predicate: (text: string) => boolean,
   maxCol = 80,
@@ -100,19 +93,4 @@ export function findCol(
     if (t && predicate(t)) return c;
   }
   return null;
-}
-
-export function getVisibleSheet(wb: ExcelJS.Workbook, name: string): ExcelJS.Worksheet {
-  const target = wb.worksheets.find(
-    (ws) => ws.name.trim() === name && ws.state !== 'hidden' && ws.state !== 'veryHidden',
-  );
-  if (!target) {
-    const visible = wb.worksheets
-      .filter((ws) => ws.state !== 'hidden' && ws.state !== 'veryHidden')
-      .map((ws) => ws.name);
-    throw new Error(
-      `В книге нет видимого листа «${name}». Видимые листы: ${visible.join(', ') || 'нет'}`,
-    );
-  }
-  return target;
 }

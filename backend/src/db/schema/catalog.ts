@@ -52,6 +52,8 @@ export const contracts = pgTable(
     customerName: text('customer_name').notNull().default(''),
     contractorName: text('contractor_name').notNull().default(''),
     subject: text('subject').notNull().default(''),
+    /** gross — цены в договоре с НДС, net — договор без НДС */
+    vatMode: text('vat_mode', { enum: ['gross', 'net'] }).notNull().default('gross'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
     deletedAt: timestamp('deleted_at', { withTimezone: true }),

@@ -51,9 +51,33 @@ export function sumStrings(vals: Iterable<string | null | undefined>): string {
   return acc.toFixed(2);
 }
 
-/** НДС 20%, выделенный из суммы с НДС: amount × 20 / 120. */
-export function vatFromGross(amount: Num): string {
-  return round2(dec(amount).mul(20).div(120));
+/**
+ * Ставки НДС по датам. Дублируют таблицу vat_rates, чтобы расчёт не требовал
+ * похода в БД; при следующей смене ставки правится и миграция, и этот список.
+ */
+export const VAT_SCHEDULE: { from: string; rate: number }[] = [
+  { from: '2019-01-01', rate: 20 },
+  { from: '2026-01-01', rate: 22 },
+];
+
+/** Ставка НДС, действующая на дату (ISO). Без даты — текущая. */
+export function vatRateOn(isoDate?: string | null): number {
+  const on = isoDate && isoDate.length >= 10 ? isoDate.slice(0, 10) : new Date().toISOString().slice(0, 10);
+  let rate = VAT_SCHEDULE[0]!.rate;
+  for (const row of VAT_SCHEDULE) {
+    if (on >= row.from) rate = row.rate;
+  }
+  return rate;
+}
+
+/**
+ * НДС, выделенный из суммы с НДС: amount × rate / (100 + rate).
+ * Ставка берётся по дате периода: до 31.12.2025 — 20%, с 01.01.2026 — 22%.
+ * Для договоров без НДС (vat_mode = 'net') выделять нечего — вызывать не нужно.
+ */
+export function vatFromGross(amount: Num, onDate?: string | null): string {
+  const rate = vatRateOn(onDate);
+  return round2(dec(amount).mul(rate).div(100 + rate));
 }
 
 export function isZero(v: Num | null | undefined): boolean {

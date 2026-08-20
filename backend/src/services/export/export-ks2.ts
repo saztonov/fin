@@ -3,7 +3,7 @@ import { and, eq, isNull } from 'drizzle-orm';
 import type { Db } from '../../db/client.js';
 import { constructionObjects, contracts, ks2Documents } from '../../db/schema/index.js';
 import { ApiError } from '../../lib/errors.js';
-import { dec, sumStrings, vatFromGross } from '../../lib/money.js';
+import { dec, sumStrings, vatFromGross, vatRateOn } from '../../lib/money.js';
 import { getKs6Grid } from '../ks6.service.js';
 import { sanitizeCellText } from './sanitize.js';
 
@@ -130,8 +130,9 @@ export async function exportKs2(db: Db, ks2Id: string): Promise<{ buffer: Buffer
   totalRow.getCell(3).value = 'Итого, руб., в т.ч. НДС';
   totalRow.getCell(7).value = Number(total);
   const vatRow = ws.getRow(rowNum + 1);
-  vatRow.getCell(3).value = 'НДС 20%';
-  vatRow.getCell(7).value = Number(vatFromGross(total));
+  const onDate = doc.periodFrom ?? doc.docDate ?? null;
+  vatRow.getCell(3).value = `НДС ${vatRateOn(onDate)}%`;
+  vatRow.getCell(7).value = Number(vatFromGross(total, onDate));
   for (const r of [totalRow, vatRow]) {
     for (let c = 1; c <= 7; c++) {
       r.getCell(c).font = { bold: true };

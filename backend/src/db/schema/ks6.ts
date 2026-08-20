@@ -38,7 +38,8 @@ export const workItems = pgTable(
     sectionId: uuid('section_id')
       .notNull()
       .references(() => ks6Sections.id),
-    kind: text('kind', { enum: ['kvr', 'nomenclature'] }).notNull(),
+    // subline — строки «в т.ч.» под номенклатурой: хранятся, но в суммы не входят
+    kind: text('kind', { enum: ['kvr', 'nomenclature', 'subline'] }).notNull(),
     kvrItemId: uuid('kvr_item_id').references((): AnyPgColumn => workItems.id),
     kvrCode: text('kvr_code').notNull().default(''),
     name: text('name').notNull(),

@@ -26,11 +26,17 @@ function childCommand(): { cmd: string; baseArgs: string[] } {
 }
 
 /** Запуск изолированного parse-child: чистый env, SIGKILL по wall-clock, лимит stdout. */
-export function runParseChild(filePath: string, kind: 'psdc' | 'ks6'): Promise<ParsedImport> {
+export function runParseChild(
+  filePath: string,
+  kind: 'psdc' | 'ks6',
+  sheetName?: string | null,
+): Promise<ParsedImport> {
   const cfg = loadConfig();
   const { cmd, baseArgs } = childCommand();
   return new Promise((resolve, reject) => {
-    const child = spawn(cmd, [...baseArgs, filePath, kind], {
+    const args = [...baseArgs, filePath, kind];
+    if (sheetName) args.push(sheetName);
+    const child = spawn(cmd, args, {
       env: {
         // без секретов: только то, что нужно node для запуска
         PATH: process.env.PATH ?? '',
@@ -115,12 +121,16 @@ export async function handleImportParse(db: Db, payload: ImportParsePayload): Pr
   if (!localPath) throw new PermanentParseError('Файл недоступен в локальном хранилище');
 
   try {
-    const data = await runParseChild(localPath, file.kind);
+    const data = await runParseChild(localPath, file.kind, file.sheetName);
     const summary = {
       sections: data.sections.length,
       kvrItems: data.items.filter((i) => i.kind === 'kvr').length,
       nomenclatureItems: data.items.filter((i) => i.kind === 'nomenclature').length,
       ks2Columns: data.ks2Columns.length,
+      sublineItems: data.items.filter((i) => i.kind === 'subline').length,
+      sheetName: data.sheetName,
+      sheetCandidates: data.sheetCandidates,
+      vat: data.vat,
       controls: data.controls,
       warnings: data.warnings,
     };
@@ -133,7 +143,13 @@ export async function handleImportParse(db: Db, payload: ImportParsePayload): Pr
       });
       await tx
         .update(importFiles)
-        .set({ status: 'parsed', parserVersion: PARSER_VERSION, error: null, updatedAt: new Date() })
+        .set({
+          status: 'parsed',
+          parserVersion: PARSER_VERSION,
+          sheetName: data.sheetName,
+          error: null,
+          updatedAt: new Date(),
+        })
         .where(eq(importFiles.id, file.id));
     });
   } catch (e) {

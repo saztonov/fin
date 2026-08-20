@@ -30,7 +30,7 @@ export interface PeriodCell {
 export interface GridItemRow {
   type: 'item';
   id: string;
-  kind: 'kvr' | 'nomenclature';
+  kind: 'kvr' | 'nomenclature' | 'subline';
   sectionId: string;
   kvrItemId: string | null;
   kvrCode: string;
@@ -78,6 +78,8 @@ export interface Ks6Grid {
     contractTotal: string;
     executedAmount: string;
     remainderAmount: string;
+    /** режим цен договора: gross — с НДС, net — без НДС */
+    vatMode: 'gross' | 'net';
     vatContract: string;
     vatExecuted: string;
     byPeriod: Record<string, string>;
@@ -102,6 +104,7 @@ export async function getKs6Grid(db: Db, objectId: string): Promise<Ks6Grid> {
         contractTotal: '0.00',
         executedAmount: '0.00',
         remainderAmount: '0.00',
+        vatMode: 'gross',
         vatContract: '0.00',
         vatExecuted: '0.00',
         byPeriod: {},
@@ -325,6 +328,17 @@ export async function getKs6Grid(db: Db, objectId: string): Promise<Ks6Grid> {
 
   const catalogAmount = add(contract.amount, ...amendmentRows.map((a) => a.amount));
 
+  // НДС считается по дате периода: до 31.12.2025 — 20%, с 01.01.2026 — 22%.
+  // Договор без НДС (vat_mode = 'net') выделять нечего.
+  const net = contract.vatMode === 'net';
+  const vatExecuted = net
+    ? '0.00'
+    : sumStrings(
+        docs.map((d) =>
+          vatFromGross(byPeriodTotals[d.id] ?? '0', d.periodFrom ?? d.docDate ?? null),
+        ),
+      );
+
   return {
     contract,
     amendments: amendmentRows,
@@ -334,8 +348,9 @@ export async function getKs6Grid(db: Db, objectId: string): Promise<Ks6Grid> {
       contractTotal,
       executedAmount,
       remainderAmount: dec(contractTotal).sub(dec(executedAmount)).toFixed(2),
-      vatContract: vatFromGross(contractTotal),
-      vatExecuted: vatFromGross(executedAmount),
+      vatMode: contract.vatMode,
+      vatContract: net ? '0.00' : vatFromGross(contractTotal, contract.dateSigned),
+      vatExecuted,
       byPeriod: byPeriodTotals,
       catalogAmount,
       catalogMismatch: !dec(catalogAmount).isZero() && !dec(catalogAmount).eq(dec(contractTotal)),

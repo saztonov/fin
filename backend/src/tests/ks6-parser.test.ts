@@ -2,6 +2,14 @@ import ExcelJS from 'exceljs';
 import { describe, expect, it } from 'vitest';
 import { parseKs6 } from '../worker/parse-child/ks6-parser.js';
 import { parsePsdc } from '../worker/parse-child/psdc-parser.js';
+import { XlsxBook, type SheetGrid } from '../worker/parse-child/xlsx-reader.js';
+
+/** Книга собирается exceljs, а читается тем же потоковым ридером, что и в проде. */
+async function grid(wb: ExcelJS.Workbook, sheet: string): Promise<SheetGrid> {
+  const buf = Buffer.from(await wb.xlsx.writeBuffer());
+  const book = await XlsxBook.fromBuffer(buf);
+  return book.readSheet(sheet);
+}
 
 /** Синтетическая книга с листом «КС-6» по образцу реальной структуры. */
 async function buildKs6Workbook(): Promise<ExcelJS.Workbook> {
@@ -86,7 +94,7 @@ async function buildKs6Workbook(): Promise<ExcelJS.Workbook> {
 describe('ks6-parser (синтетическая книга)', () => {
   it('разбирает структуру, договорные графы и помесячные пары', async () => {
     const wb = await buildKs6Workbook();
-    const parsed = parseKs6(wb);
+    const parsed = parseKs6(await grid(wb, 'КС-6'));
 
     expect(parsed.header.contractNumber).toBe('Д-1/24');
     expect(parsed.header.contractDate).toBe('2024-10-11');
@@ -119,10 +127,12 @@ describe('ks6-parser (синтетическая книга)', () => {
     expect(parsed.controls.vat).toBe('50.00');
   });
 
-  it('ошибка с перечнем видимых листов, если «КС-6» нет', async () => {
+  it('понятная ошибка, если на листе нет таблицы работ', async () => {
     const wb = new ExcelJS.Workbook();
-    wb.addWorksheet('Другой лист');
-    expect(() => parseKs6(wb)).toThrow(/нет видимого листа «КС-6».*Другой лист/);
+    const ws = wb.addWorksheet('Другой лист');
+    ws.getRow(1).getCell(1).value = 'Просто текст';
+    const g = await grid(wb, 'Другой лист');
+    expect(() => parseKs6(g)).toThrow(/не найдена таблица работ/);
   });
 });
 
@@ -164,7 +174,7 @@ describe('psdc-parser (синтетическая книга)', () => {
     set(10, 10, 'Итого,руб., в т.ч. НДС');
     set(10, 15, 1000);
 
-    const parsed = parsePsdc(wb);
+    const parsed = parsePsdc(await grid(wb, 'ПСДЦ'));
     expect(parsed.sections).toHaveLength(1);
     expect(parsed.items).toHaveLength(2);
     expect(parsed.items[1]!.characteristic).toBe('с вывозом');

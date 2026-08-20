@@ -3,7 +3,7 @@ import type { Db } from '../../db/client.js';
 import { constructionObjects } from '../../db/schema/index.js';
 import { and, eq, isNull } from 'drizzle-orm';
 import { ApiError } from '../../lib/errors.js';
-import { vatFromGross } from '../../lib/money.js';
+import { vatFromGross, vatRateOn } from '../../lib/money.js';
 import { getKs6Grid } from '../ks6.service.js';
 import { sanitizeCellText } from './sanitize.js';
 
@@ -209,8 +209,9 @@ export async function exportKs6(db: Db, objectId: string): Promise<{ buffer: Buf
   }
 
   // ---- итоги ----
+  const net = grid.totals.vatMode === 'net';
   const totalRow = ws.getRow(rowNum);
-  totalRow.getCell(3).value = 'Итого, руб., в т.ч. НДС';
+  totalRow.getCell(3).value = net ? 'Итого, руб., без НДС' : 'Итого, руб., в т.ч. НДС';
   totalRow.getCell(9).value = toNumKeepZero(grid.totals.contractTotal);
   totalRow.getCell(11).value = toNumKeepZero(grid.totals.executedAmount);
   periods.forEach((p, i) => {
@@ -219,11 +220,18 @@ export async function exportKs6(db: Db, objectId: string): Promise<{ buffer: Buf
   totalRow.getCell(colRemAmt).value = toNumKeepZero(grid.totals.remainderAmount);
   totalRow.getCell(colTotAmt).value = toNumKeepZero(grid.totals.executedAmount);
   const vatRow = ws.getRow(rowNum + 1);
-  vatRow.getCell(3).value = 'НДС 20%';
+  // ставка зависит от даты периода (20% до 31.12.2025, 22% с 01.01.2026),
+  // поэтому в подписи перечисляются все ставки, встреченные в документе
+  const rates = [...new Set(periods.map((p) => vatRateOn(p.periodFrom ?? p.docDate)))].sort();
+  vatRow.getCell(3).value = net ? 'НДС не облагается' : `НДС ${rates.join('/')}%`;
   vatRow.getCell(9).value = toNumKeepZero(grid.totals.vatContract);
   vatRow.getCell(11).value = toNumKeepZero(grid.totals.vatExecuted);
   periods.forEach((p, i) => {
-    vatRow.getCell(pairCol(i) + 1).value = toNumKeepZero(vatFromGross(grid.totals.byPeriod[p.id] ?? '0'));
+    vatRow.getCell(pairCol(i) + 1).value = net
+      ? null
+      : toNumKeepZero(
+          vatFromGross(grid.totals.byPeriod[p.id] ?? '0', p.periodFrom ?? p.docDate),
+        );
   });
   for (const r of [totalRow, vatRow]) {
     for (let c = 1; c <= lastCol; c++) {

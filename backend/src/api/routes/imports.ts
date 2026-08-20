@@ -58,6 +58,9 @@ export async function importRoutes(app: FastifyInstance) {
       if (!data) throw ApiError.badRequest('Файл не передан', 'no_file');
       const kindRaw = (data.fields.kind as { value?: string } | undefined)?.value;
       const kind = z.enum(['psdc', 'ks6']).parse(kindRaw);
+      // лист можно задать сразу; без него parse-child подберёт его сам
+      const sheetName =
+        (data.fields.sheet as { value?: string } | undefined)?.value?.slice(0, 200) || null;
 
       const guarded = await guardXlsxUpload(data.file, data.filename);
       if (data.file.truncated) {
@@ -79,6 +82,7 @@ export async function importRoutes(app: FastifyInstance) {
           sizeBytes: guarded.sizeBytes,
           sha256: guarded.sha256,
           mimeDetected: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+          sheetName,
           status: 'uploaded',
         })
         .returning();
@@ -159,6 +163,34 @@ export async function importRoutes(app: FastifyInstance) {
         throw ApiError.forbidden('Перезапись существующих КС-2 доступна только администратору');
       }
       return applyImport(app.db, id, options, req.authUser.id);
+    },
+  );
+
+  // перечитать уже загруженный файл другим листом книги
+  app.post(
+    '/imports/:id/reparse',
+    { preHandler: [app.authenticate, app.requireRole('admin', 'manager')] },
+    async (req) => {
+      const { id } = idParam.parse(req.params);
+      const file = await getImportFile(app, id);
+      await assertContractAccess(app.db, req.authUser, file.contractId);
+      if (file.status === 'applied') {
+        throw ApiError.conflict('Импорт уже применён — перечитать нельзя', 'already_applied');
+      }
+      const { sheet } = z.object({ sheet: z.string().min(1).max(200) }).parse(req.body ?? {});
+      await app.db
+        .update(importFiles)
+        .set({ sheetName: sheet, status: 'uploaded', error: null, updatedAt: new Date() })
+        .where(eq(importFiles.id, id));
+      await enqueue(app.db, 'import_parse', { importFileId: id });
+      await writeAudit(app.db, {
+        action: 'import.reparse',
+        userId: req.authUser.id,
+        entityType: 'import',
+        entityId: id,
+        details: { sheet },
+      });
+      return { message: `Файл поставлен на повторный разбор листа «${sheet}»` };
     },
   );
 

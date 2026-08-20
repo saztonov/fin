@@ -27,6 +27,8 @@ export const importFiles = pgTable(
     sizeBytes: bigint('size_bytes', { mode: 'number' }).notNull(),
     sha256: text('sha256').notNull(),
     mimeDetected: text('mime_detected').notNull().default(''),
+    /** лист книги, выбранный пользователем; null — подбирается автоматически */
+    sheetName: text('sheet_name'),
     status: text('status', {
       enum: ['uploaded', 'parsing', 'parsed', 'parse_failed', 'applied', 'discarded'],
     })

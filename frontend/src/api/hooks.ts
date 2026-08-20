@@ -177,6 +177,20 @@ export function useImportStatus(importId: string | null) {
   });
 }
 
+/** Перечитать уже загруженный файл другим листом книги. */
+export function useReparseImport(objectId: string | null) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ importId, sheet }: { importId: string; sheet: string }) =>
+      api<{ message: string }>(`/imports/${importId}/reparse`, { body: { sheet } }),
+    onSuccess: (_data, vars) => {
+      void qc.invalidateQueries({ queryKey: ['import', vars.importId] });
+      void qc.invalidateQueries({ queryKey: ['import-preview', vars.importId] });
+      void qc.invalidateQueries({ queryKey: ['imports', objectId] });
+    },
+  });
+}
+
 export function useImportPreview(importId: string | null, enabled: boolean) {
   return useQuery({
     queryKey: ['import-preview', importId],

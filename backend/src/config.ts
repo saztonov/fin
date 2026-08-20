@@ -23,7 +23,9 @@ const envSchema = z.object({
   STORAGE_DIR: z.string().default('.data/uploads'),
   UPLOAD_MAX_BYTES: z.coerce.number().int().min(1024).default(26_214_400),
   WORKER_POLL_MS: z.coerce.number().int().min(100).default(1000),
-  PARSE_TIMEOUT_MS: z.coerce.number().int().min(1000).default(60_000),
+  // потоковый разбор укладывается в единицы секунд даже на книгах 15 МБ,
+  // но запас нужен: у заказчиков встречаются листы на 14 тыс. строк × 180 колонок
+  PARSE_TIMEOUT_MS: z.coerce.number().int().min(1000).default(180_000),
 });
 
 export type Config = z.infer<typeof envSchema>;
