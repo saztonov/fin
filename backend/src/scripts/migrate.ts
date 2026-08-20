@@ -8,18 +8,16 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import pg from 'pg';
 import { loadConfig } from '../config.js';
+import { pgConnectionOptions } from '../db/pg-ssl.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const MIGRATIONS_DIR = path.resolve(here, '..', '..', 'drizzle');
 
 export async function runMigrations(databaseUrl?: string): Promise<string[]> {
   const cfg = loadConfig();
-  const client = new pg.Client({
-    connectionString: databaseUrl ?? cfg.DATABASE_URL,
-    ssl: cfg.DB_CA_CERT_PATH
-      ? { ca: fs.readFileSync(cfg.DB_CA_CERT_PATH, 'utf8'), rejectUnauthorized: true }
-      : undefined,
-  });
+  const client = new pg.Client(
+    pgConnectionOptions(databaseUrl ?? cfg.DATABASE_URL, cfg.DB_CA_CERT_PATH),
+  );
   await client.connect();
   const applied: string[] = [];
   try {
