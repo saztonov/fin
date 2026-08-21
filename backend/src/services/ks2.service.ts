@@ -137,11 +137,8 @@ export async function clearByContract(
   const ids = docs.map((d) => d.id);
   let lines = 0;
   await db.transaction(async (tx) => {
-    const removed = await tx
-      .delete(ks2Lines)
-      .where(inArray(ks2Lines.ks2DocumentId, ids))
-      .returning({ id: ks2Lines.id });
-    lines = removed.length;
+    const removed = await tx.delete(ks2Lines).where(inArray(ks2Lines.ks2DocumentId, ids));
+    lines = removed.rowCount ?? 0;
     await tx.delete(ks2Documents).where(eq(ks2Documents.contractId, contractId));
   });
 
