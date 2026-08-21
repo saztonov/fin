@@ -55,7 +55,15 @@ FIN_TAG="$(git -C "$PORTAL_DIR" rev-parse --short HEAD)"
 export FIN_TAG
 
 echo "==> [2/6] build (тег $FIN_TAG)"
-"${COMPOSE[@]}" build
+# Строго по одному сервису: параллельная сборка fin-api и fin-web — это два node-процесса
+# одновременно, что на этом VPS (8 ГБ, 1 ГБ swap, пять порталов рядом) уводило хост в
+# thrashing и роняло sshd. Флага сериализации у `docker compose build` нет,
+# COMPOSE_PARALLEL_LIMIT на сборку не распространяется — перечисляем сервисы явно.
+# fin-worker/migrate/seed своего build: не имеют, они переиспользуют образ fin-api.
+for svc in fin-api fin-web; do
+  echo "    сборка $svc"
+  "${COMPOSE[@]}" build "$svc"
+done
 
 MIGRATE_STATUS="нет"
 if [ "$MIGRATE" = 1 ]; then

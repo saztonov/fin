@@ -4,6 +4,12 @@
 
 FROM node:24-alpine AS build
 WORKDIR /app
+# Потолок кучи — см. комментарий в backend/Dockerfile. Здесь выше: `npm run build` — это
+# `tsc --noEmit && vite build`, и rollup при бандлинге antd прожорливее tsc. Процессы идут
+# последовательно, так что пик — один процесс за раз. Если упрётся («JavaScript heap out of
+# memory») — поднимать значение, а не убирать ENV: провалившаяся сборка безопаснее, чем
+# сборка без потолка, которая уводит VPS в thrashing.
+ENV NODE_OPTIONS=--max-old-space-size=1536
 COPY package.json package-lock.json* ./
 COPY backend/package.json backend/
 COPY frontend/package.json frontend/

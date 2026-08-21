@@ -13,6 +13,11 @@ RUN npm ci --workspace backend --include-workspace-root=false --omit=dev --ignor
 
 FROM node:24-alpine AS build
 WORKDIR /app
+# Потолок кучи фиксируем явно: у build-контейнера нет cgroup-лимита (mem_limit из compose
+# применяется к run, а не к build), поэтому иначе node ориентируется на всю память хоста и
+# берёт ~2 ГБ, хотя tsc со skipLibCheck на этом объёме исходников столько не нужно.
+# Сборка на VPS идёт рядом с работающими порталами — свободной памяти там нет.
+ENV NODE_OPTIONS=--max-old-space-size=512
 COPY --from=deps /app/node_modules node_modules
 COPY backend backend
 COPY package.json ./
