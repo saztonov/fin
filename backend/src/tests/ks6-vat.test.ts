@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { netFromGross, sumStrings, vatFromGross, vatRateOn } from '../lib/money.js';
+import { assertPeriodFitsPart, partOfPeriod, partRate } from '../lib/estimate-parts.js';
+import {
+  netFromGross,
+  netPriceFromGrossRate,
+  sumStrings,
+  vatFromGross,
+  vatFromGrossRate,
+  vatRateOn,
+} from '../lib/money.js';
 
 /**
  * Правила, на которых стоит режим «без НДС» в гриде КС-6 (ks6.service).
@@ -29,5 +37,60 @@ describe('НДС в гриде КС-6', () => {
     // одна и та же сумма даёт разный НДС в зависимости от даты договора или ДС
     expect(vatFromGross('1200000.00', '2025-11-30')).toBe('200000.00');
     expect(vatFromGross('1200000.00', '2026-02-01')).toBe('216393.44');
+  });
+});
+
+/**
+ * Части сметы: при разделении по ставкам дата договора перестаёт что-либо решать.
+ * Реальный случай — договор 2023 года, у которого часть работ исполняется в 2026-м
+ * и лежит на отдельном листе книги «КС6а ндс22%».
+ */
+describe('Ставка части сметы', () => {
+  it('ставка берётся из части, а не из даты договора', () => {
+    expect(partRate('vat20')).toBe(20);
+    expect(partRate('vat22')).toBe(22);
+    // legacy ставки не имеет — там решает дата
+    expect(partRate('legacy')).toBeNull();
+
+    // договор подписан в 2023-м, но часть 22 % считается по 22 %
+    const contractSigned = '2023-05-10';
+    expect(vatFromGross('1200000.00', contractSigned)).toBe('200000.00');
+    expect(vatFromGrossRate('1200000.00', partRate('vat22')!)).toBe('216393.44');
+  });
+
+  it('цена без НДС считается делением и сохраняет 6 знаков в API', () => {
+    // округление до копеек — задача отображения, API отдаёт точное значение
+    expect(netPriceFromGrossRate('4146291.47', 22)).toBe('3398599.565574');
+    expect(netPriceFromGrossRate('4146291.47', 20)).toBe('3455242.891667');
+  });
+
+  it('нулевая ставка (договор без НДС) ничего не выделяет', () => {
+    expect(vatFromGrossRate('1200000.00', 0)).toBe('0.00');
+    expect(netPriceFromGrossRate('1234.567890', 0)).toBe('1234.567890');
+  });
+});
+
+describe('Границы периодов по частям', () => {
+  it('часть 20 % не принимает периоды 2026 года', () => {
+    expect(() => assertPeriodFitsPart('vat20', '2026-01-01', '2026-01-31')).toThrow(
+      /01\.01\.2026|22 %/,
+    );
+    expect(() => assertPeriodFitsPart('vat20', '2025-12-01', '2025-12-31')).not.toThrow();
+  });
+
+  it('часть 22 % не принимает периоды до 2026 года', () => {
+    expect(() => assertPeriodFitsPart('vat22', '2025-12-01', '2025-12-31')).toThrow();
+    expect(() => assertPeriodFitsPart('vat22', '2026-01-01', '2026-01-31')).not.toThrow();
+  });
+
+  it('legacy принимает любой период, но не перевёрнутый', () => {
+    expect(() => assertPeriodFitsPart('legacy', '2024-01-01', '2026-12-31')).not.toThrow();
+    expect(() => assertPeriodFitsPart('legacy', '2026-05-01', '2026-01-01')).toThrow(/позже/);
+  });
+
+  it('колонка книги относится к части по дате начала периода', () => {
+    expect(partOfPeriod('2025-12-31')).toBe('vat20');
+    expect(partOfPeriod('2026-01-01')).toBe('vat22');
+    expect(partOfPeriod(null)).toBe('vat20');
   });
 });

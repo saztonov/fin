@@ -80,11 +80,12 @@ export function vatRateOn(isoDate?: string | null): number {
 
 /**
  * НДС, выделенный из суммы с НДС: amount × rate / (100 + rate).
- * Ставка берётся по дате периода: до 31.12.2025 — 20%, с 01.01.2026 — 22%.
- * Для договоров без НДС (vat_mode = 'net') выделять нечего — вызывать не нужно.
+ *
+ * Ставка передаётся явно. У части сметы (vat20/vat22) она своя и от даты не
+ * зависит: договор мог быть подписан в 2023 году, но часть 22 % считается по 22 %.
  */
-export function vatFromGross(amount: Num, onDate?: string | null): string {
-  const rate = vatRateOn(onDate);
+export function vatFromGrossRate(amount: Num, rate: number): string {
+  if (!rate) return '0.00';
   return round2(dec(amount).mul(rate).div(100 + rate));
 }
 
@@ -93,17 +94,34 @@ export function vatFromGross(amount: Num, onDate?: string | null): string {
  * `amount × 100 / (100 + rate)`: так «без НДС» + «НДС» всегда дают исходную сумму
  * до копейки, и итог таблицы сходится со строками при любом округлении.
  */
-export function netFromGross(amount: Num, onDate?: string | null): string {
-  return sub(amount, vatFromGross(amount, onDate));
+export function netFromGrossRate(amount: Num, rate: number): string {
+  return sub(amount, vatFromGrossRate(amount, rate));
 }
 
 /**
  * Цена за единицу без НДС: здесь делением, а не вычитанием round2-НДС, — цена
  * хранится с 6 знаками, и копеечное округление промежуточного НДС испортило бы её.
  */
-export function netPriceFromGross(price: Num, onDate?: string | null): string {
-  const rate = vatRateOn(onDate);
+export function netPriceFromGrossRate(price: Num, rate: number): string {
+  if (!rate) return round6(price);
   return round6(dec(price).mul(100).div(100 + rate));
+}
+
+/**
+ * Те же расчёты со ставкой по дате: до 31.12.2025 — 20%, с 01.01.2026 — 22%.
+ * Используются для части `legacy`, где смета не разделена по ставкам.
+ * Для договоров без НДС (vat_mode = 'net') выделять нечего — вызывать не нужно.
+ */
+export function vatFromGross(amount: Num, onDate?: string | null): string {
+  return vatFromGrossRate(amount, vatRateOn(onDate));
+}
+
+export function netFromGross(amount: Num, onDate?: string | null): string {
+  return netFromGrossRate(amount, vatRateOn(onDate));
+}
+
+export function netPriceFromGross(price: Num, onDate?: string | null): string {
+  return netPriceFromGrossRate(price, vatRateOn(onDate));
 }
 
 export function isZero(v: Num | null | undefined): boolean {

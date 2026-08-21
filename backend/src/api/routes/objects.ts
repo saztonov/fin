@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { constructionObjects, userObjectAssignments } from '../../db/schema/index.js';
 import { writeAudit } from '../../lib/audit.js';
 import { ApiError } from '../../lib/errors.js';
+import { getObjectSummaries } from '../../services/object-summary.service.js';
 
 const objectSchema = z.object({
   code: z
@@ -17,36 +18,41 @@ const objectSchema = z.object({
 
 const idParam = z.object({ id: z.string().uuid() });
 
+/**
+ * Область видимости объектов: null — ограничений нет, иначе список id.
+ * Экономист без назначений видит все объекты (требование заказчика).
+ */
+async function visibleObjectIds(
+  app: FastifyInstance,
+  user: { id: string; role: string },
+): Promise<string[] | null> {
+  if (user.role !== 'economist') return null;
+  const assigned = await app.db
+    .select({ objectId: userObjectAssignments.objectId })
+    .from(userObjectAssignments)
+    .where(eq(userObjectAssignments.userId, user.id));
+  return assigned.length > 0 ? assigned.map((a) => a.objectId) : null;
+}
+
 export async function objectRoutes(app: FastifyInstance) {
   app.get('/objects', { preHandler: [app.authenticate] }, async (req) => {
-    const base = and(isNull(constructionObjects.deletedAt));
-    if (req.authUser.role === 'economist') {
-      const assigned = await app.db
-        .select({ objectId: userObjectAssignments.objectId })
-        .from(userObjectAssignments)
-        .where(eq(userObjectAssignments.userId, req.authUser.id));
-      // назначений нет — видны все (требование заказчика)
-      if (assigned.length > 0) {
-        return app.db
-          .select()
-          .from(constructionObjects)
-          .where(
-            and(
-              base,
-              inArray(
-                constructionObjects.id,
-                assigned.map((a) => a.objectId),
-              ),
-            ),
-          )
-          .orderBy(asc(constructionObjects.code));
-      }
-    }
+    const base = isNull(constructionObjects.deletedAt);
+    const ids = await visibleObjectIds(app, req.authUser);
     return app.db
       .select()
       .from(constructionObjects)
-      .where(base)
+      .where(ids ? and(base, inArray(constructionObjects.id, ids)) : base)
       .orderBy(asc(constructionObjects.code));
+  });
+
+  /**
+   * Сводка для карточек объектов на стартовом экране КС: сумма договора,
+   * выполнение и остаток. Регистрируется до `/objects/:id` — статический
+   * сегмент должен читаться как таковой, а не как параметр.
+   */
+  app.get('/objects/summary', { preHandler: [app.authenticate] }, async (req) => {
+    const ids = await visibleObjectIds(app, req.authUser);
+    return getObjectSummaries(app.db, ids);
   });
 
   app.post(

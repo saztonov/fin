@@ -3,6 +3,7 @@ import {
   ClearOutlined,
   DeleteOutlined,
   DownloadOutlined,
+  FilterOutlined,
   PlusOutlined,
   RollbackOutlined,
   UploadOutlined,
@@ -24,8 +25,8 @@ import dayjs, { type Dayjs } from 'dayjs';
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { downloadFile } from '../../api/client';
-import type { Ks6Grid, PeriodInfo, Role, VatView } from '../../api/types';
-import { useClearKs2, useCreateKs2, useKs2Action } from '../../api/hooks';
+import type { Ks6Grid, PartCode, PeriodInfo, Role, VatView } from '../../api/types';
+import { useClearEstimate, useClearKs2, useCreateKs2, useKs2Action } from '../../api/hooks';
 import { fmtDate, fmtMoney, fmtMonth } from '../../shared/lib/formatters';
 import { useFeedback } from '../../shared/lib/useFeedback';
 import { StatusTag } from '../../shared/ui/StatusTag';
@@ -67,6 +68,18 @@ function Ks2Amounts({ p, vatMode }: { p: PeriodInfo; vatMode: 'gross' | 'net' })
   );
 }
 
+/**
+ * Отчётный период по умолчанию — прошлый месяц, но в границах вкладки: во вкладке
+ * «НДС 20%» месяц не может быть позже декабря 2025, во «НДС 22%» — раньше января
+ * 2026. Иначе форма подставляла бы период, который сервер сразу отклонит.
+ */
+function defaultPeriod(part: PartCode | undefined): [Dayjs, Dayjs] {
+  let month = dayjs().subtract(1, 'month');
+  if (part === 'vat20' && month.isAfter(dayjs('2025-12-01'))) month = dayjs('2025-12-01');
+  if (part === 'vat22' && month.isBefore(dayjs('2026-01-01'))) month = dayjs('2026-01-01');
+  return [month.startOf('month'), month.endOf('month')];
+}
+
 function ks2Label(p: PeriodInfo): string {
   if (p.periodFrom) return `КС-2 №${p.number} · ${fmtMonth(p.periodFrom)}`;
   return `КС-2 №${p.number}`;
@@ -92,7 +105,11 @@ export function Ks2Strip({
   const createKs2 = useCreateKs2(objectId);
   const ks2Action = useKs2Action(objectId);
   const clearKs2 = useClearKs2(objectId);
+  const clearEstimate = useClearEstimate(objectId);
   const [createOpen, setCreateOpen] = useState(false);
+  // редкие действия (импорт/экспорт/очистка) свёрнуты: они нужны считаные разы,
+  // а высоту грида съедали постоянно
+  const [extrasOpen, setExtrasOpen] = useState(false);
   const [form] = Form.useForm();
 
   const canManage = role === 'admin' || role === 'manager';
@@ -148,6 +165,51 @@ export function Ks2Strip({
           return Promise.reject();
         }
         const res = await clearKs2.mutateAsync();
+        onSelect(null);
+        message.success(res.message);
+      },
+    });
+  };
+
+  const clearEstimateAll = () => {
+    const approved = grid.periods.filter((p) => p.status === 'approved').length;
+    let typed = '';
+    modal.confirm({
+      title: `Очистить смету объекта ${objectCode} полностью?`,
+      width: 560,
+      content: (
+        <div>
+          <p style={{ marginTop: 0 }}>
+            Будут удалены <b>все строки сметы и разделы</b>, а вместе с ними —{' '}
+            <b>{grid.periods.length}</b> КС-2 (в т.ч. утверждённых: {approved}) со строками
+            выполнения. Иначе смету удалить нельзя: строки выполнения ссылаются на строки сметы.
+          </p>
+          <p style={{ marginBottom: 12 }}>
+            Договор, доп. соглашения и журнал загруженных файлов сохранятся — после очистки
+            книгу можно загрузить заново с нуля.
+          </p>
+          <p style={{ marginBottom: 4 }}>
+            Для подтверждения введите код объекта <b>{objectCode}</b>:
+          </p>
+          <Input
+            placeholder={objectCode}
+            autoFocus
+            onChange={(e) => {
+              typed = e.target.value;
+            }}
+          />
+        </div>
+      ),
+      okText: 'Очистить смету',
+      okButtonProps: { danger: true },
+      cancelText: 'Отмена',
+      autoFocusButton: 'cancel',
+      onOk: async () => {
+        if (typed.trim().toLowerCase() !== objectCode.trim().toLowerCase()) {
+          message.error('Код объекта введён неверно');
+          return Promise.reject();
+        }
+        const res = await clearEstimate.mutateAsync();
         onSelect(null);
         message.success(res.message);
       },
@@ -234,90 +296,136 @@ export function Ks2Strip({
           <Button size="small" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>
             Новый КС-2
           </Button>
-          <Button
+        </Space>
+
+        <Space wrap size={8}>
+          <Typography.Text type="secondary">Период:</Typography.Text>
+          <DatePicker.RangePicker
+            picker="month"
             size="small"
-            icon={<DownloadOutlined />}
-            onClick={() => void downloadFile(`/objects/${objectId}/export/ks6.xlsx`)}
+            format="MMM YYYY"
+            allowClear
+            allowEmpty={[true, true]}
+            placeholder={['с месяца', 'по месяц']}
+            value={[
+              range[0] ? dayjs(range[0], 'YYYY-MM') : null,
+              range[1] ? dayjs(range[1], 'YYYY-MM') : null,
+            ]}
+            onChange={(vals) =>
+              onRangeChange(
+                vals?.[0]?.format('YYYY-MM') ?? null,
+                vals?.[1]?.format('YYYY-MM') ?? null,
+              )
+            }
+            presets={[
+              { label: 'Текущий год', value: [dayjs().startOf('year'), dayjs().endOf('year')] },
+              {
+                label: 'Прошлый год',
+                value: [
+                  dayjs().subtract(1, 'year').startOf('year'),
+                  dayjs().subtract(1, 'year').endOf('year'),
+                ],
+              },
+              { label: 'Последние 12 месяцев', value: [dayjs().subtract(11, 'month'), dayjs()] },
+            ]}
+          />
+          {filtered ? (
+            <Typography.Text type="secondary">
+              Показано КС-2: {visibleCount} из {grid.periods.length}
+            </Typography.Text>
+          ) : null}
+          <Tooltip
+            title={
+              grid.totals.vatMode === 'net'
+                ? 'Договор ведётся без НДС — выделять нечего'
+                : grid.activePart?.vatRate
+                  ? `Пересчитывает все суммы таблицы по ставке вкладки — ${grid.activePart.vatRate}%`
+                  : 'Пересчитывает все суммы таблицы по ставке на дату периода'
+            }
           >
-            Экспорт КС-6
-          </Button>
-          {canManage ? (
+            <Segmented
+              size="small"
+              value={vatView}
+              disabled={grid.totals.vatMode === 'net'}
+              onChange={(v) => onVatViewChange(v as VatView)}
+              options={[
+                { value: 'gross', label: 'с НДС' },
+                { value: 'net', label: 'без НДС' },
+              ]}
+            />
+          </Tooltip>
+          <Tooltip title={extrasOpen ? 'Свернуть' : 'Импорт, экспорт и очистка'}>
             <Button
               size="small"
-              icon={<UploadOutlined />}
-              onClick={() => navigate(`/ks/import?object=${objectId}`)}
+              type={extrasOpen ? 'primary' : 'text'}
+              icon={<FilterOutlined />}
+              aria-expanded={extrasOpen}
+              onClick={() => setExtrasOpen((v) => !v)}
             >
-              Импорт
+              Фильтр
             </Button>
-          ) : null}
-          {role === 'admin' && grid.periods.length > 0 ? (
-            <Tooltip title="Удалить всю историю КС-2 по объекту — под повторную загрузку из Excel">
-              <Button
-                size="small"
-                danger
-                icon={<ClearOutlined />}
-                loading={clearKs2.isPending}
-                onClick={clearAll}
-              >
-                Очистить КС-2
-              </Button>
-            </Tooltip>
-          ) : null}
+          </Tooltip>
         </Space>
       </Space>
 
-      <Space wrap size={8}>
-        <Typography.Text type="secondary">Период:</Typography.Text>
-        <DatePicker.RangePicker
-          picker="month"
-          size="small"
-          format="MMM YYYY"
-          allowClear
-          allowEmpty={[true, true]}
-          placeholder={['с месяца', 'по месяц']}
-          value={[
-            range[0] ? dayjs(range[0], 'YYYY-MM') : null,
-            range[1] ? dayjs(range[1], 'YYYY-MM') : null,
-          ]}
-          onChange={(vals) =>
-            onRangeChange(vals?.[0]?.format('YYYY-MM') ?? null, vals?.[1]?.format('YYYY-MM') ?? null)
-          }
-          presets={[
-            { label: 'Текущий год', value: [dayjs().startOf('year'), dayjs().endOf('year')] },
-            {
-              label: 'Прошлый год',
-              value: [
-                dayjs().subtract(1, 'year').startOf('year'),
-                dayjs().subtract(1, 'year').endOf('year'),
-              ],
-            },
-            { label: 'Последние 12 месяцев', value: [dayjs().subtract(11, 'month'), dayjs()] },
-          ]}
-        />
-        {filtered ? (
-          <Typography.Text type="secondary">
-            Показано КС-2: {visibleCount} из {grid.periods.length}
-          </Typography.Text>
-        ) : null}
-        <Tooltip
-          title={
-            grid.totals.vatMode === 'net'
-              ? 'Договор ведётся без НДС — выделять нечего'
-              : 'Пересчитывает все суммы таблицы по ставке на дату периода'
-          }
-        >
-          <Segmented
-            size="small"
-            value={vatView}
-            disabled={grid.totals.vatMode === 'net'}
-            onChange={(v) => onVatViewChange(v as VatView)}
-            options={[
-              { value: 'gross', label: 'с НДС' },
-              { value: 'net', label: 'без НДС' },
-            ]}
-          />
-        </Tooltip>
-      </Space>
+      {/* grid-template-rows 0fr→1fr: height:auto не анимируется */}
+      <div className={`ks-extras${extrasOpen ? ' ks-extras--open' : ''}`}>
+        <div className="ks-extras__inner">
+          <Space wrap size={8}>
+            {selected ? (
+              <Button
+                size="small"
+                icon={<DownloadOutlined />}
+                onClick={() => void downloadFile(`/ks2/${selected.id}/export.xlsx`)}
+              >
+                Экспорт КС-2
+              </Button>
+            ) : null}
+            <Button
+              size="small"
+              icon={<DownloadOutlined />}
+              onClick={() => void downloadFile(`/objects/${objectId}/export/ks6.xlsx`)}
+            >
+              Экспорт КС-6
+            </Button>
+            {canManage ? (
+              <Button
+                size="small"
+                icon={<UploadOutlined />}
+                onClick={() => navigate(`/ks/import?object=${objectId}`)}
+              >
+                Импорт
+              </Button>
+            ) : null}
+            {role === 'admin' && grid.periods.length > 0 ? (
+              <Tooltip title="Удалить всю историю КС-2 по объекту — под повторную загрузку из Excel">
+                <Button
+                  size="small"
+                  danger
+                  icon={<ClearOutlined />}
+                  loading={clearKs2.isPending}
+                  onClick={clearAll}
+                >
+                  Очистить КС-2
+                </Button>
+              </Tooltip>
+            ) : null}
+            {role === 'admin' ? (
+              <Tooltip title="Удалить строки сметы, разделы и всю историю КС-2 — под загрузку книги с нуля">
+                <Button
+                  size="small"
+                  danger
+                  icon={<ClearOutlined />}
+                  loading={clearEstimate.isPending}
+                  onClick={clearEstimateAll}
+                >
+                  Очистить смету
+                </Button>
+              </Tooltip>
+            ) : null}
+          </Space>
+        </div>
+      </div>
 
       {selected ? <Ks2Amounts p={selected} vatMode={grid.totals.vatMode} /> : null}
 
@@ -335,10 +443,7 @@ export function Ks2Strip({
           form={form}
           layout="vertical"
           preserve={false}
-          initialValues={{
-            docDate: dayjs(),
-            period: [dayjs().subtract(1, 'month').startOf('month'), dayjs().subtract(1, 'month').endOf('month')],
-          }}
+          initialValues={{ docDate: dayjs(), period: defaultPeriod(grid.activePart?.code) }}
           onFinish={async (values: { number: string; docDate: Dayjs; period: [Dayjs, Dayjs] }) => {
             try {
               const created = await createKs2.mutateAsync({
@@ -346,6 +451,9 @@ export function Ks2Strip({
                 docDate: values.docDate?.format('YYYY-MM-DD') ?? null,
                 periodFrom: values.period?.[0]?.format('YYYY-MM-DD') ?? null,
                 periodTo: values.period?.[1]?.format('YYYY-MM-DD') ?? null,
+                // документ заводится в открытой вкладке: сервер проверит, что
+                // период попадает в её границы по ставке НДС
+                part: grid.activePart?.code ?? null,
               });
               setCreateOpen(false);
               onSelect(created.id);

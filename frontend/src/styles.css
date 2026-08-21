@@ -129,3 +129,22 @@ body,
   background: #fffbeb;
   border-radius: 8px;
 }
+
+/* редкие действия под кнопкой «Фильтр»: раскрытие через grid-template-rows,
+   потому что переход height: auto браузером не анимируется */
+.ks-extras {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 0.15s ease;
+}
+.ks-extras--open {
+  grid-template-rows: 1fr;
+}
+.ks-extras__inner {
+  overflow: hidden;
+  min-height: 0;
+}
+.ks-extras--open .ks-extras__inner {
+  /* иначе тень/фокус кнопок обрезаются рамкой grid-строки */
+  overflow: visible;
+}

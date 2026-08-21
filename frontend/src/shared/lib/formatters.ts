@@ -17,6 +17,15 @@ const priceFmt = new Intl.NumberFormat('ru-RU', {
   maximumFractionDigits: 6,
 });
 
+/**
+ * Цена в режиме «без НДС»: там 6 знаков — артефакт деления на (100 + ставка),
+ * а не то, что было в книге. Показываем копейки.
+ */
+const priceFmt2 = new Intl.NumberFormat('ru-RU', {
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2,
+});
+
 export function fmtMoney(value: string | number | null | undefined): string {
   if (value === null || value === undefined || value === '') return '';
   const n = Number(value);
@@ -24,11 +33,14 @@ export function fmtMoney(value: string | number | null | undefined): string {
   return moneyFmt.format(n);
 }
 
-export function fmtPrice(value: string | number | null | undefined): string {
+export function fmtPrice(
+  value: string | number | null | undefined,
+  precision: 2 | 6 = 6,
+): string {
   if (value === null || value === undefined || value === '') return '';
   const n = Number(value);
   if (!Number.isFinite(n)) return String(value);
-  return priceFmt.format(n);
+  return (precision === 2 ? priceFmt2 : priceFmt).format(n);
 }
 
 export function fmtQty(value: string | number | null | undefined): string {

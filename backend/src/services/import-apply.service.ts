@@ -1,8 +1,9 @@
-import { and, asc, eq, isNull } from 'drizzle-orm';
-import type { Db } from '../db/client.js';
+import { and, asc, eq, isNull, sql } from 'drizzle-orm';
+import type { Db, Tx } from '../db/client.js';
 import {
   amendments,
   contracts,
+  estimateParts,
   importFiles,
   importStaging,
   ks2Documents,
@@ -12,7 +13,15 @@ import {
 } from '../db/schema/index.js';
 import { writeAudit } from '../lib/audit.js';
 import { ApiError } from '../lib/errors.js';
+import {
+  baseYearOfPart,
+  PART_TITLE,
+  periodFitsPart,
+  type PartCode,
+} from '../lib/estimate-parts.js';
 import { dec, sumStrings } from '../lib/money.js';
+import { ensurePart, findPart } from './parts.service.js';
+import { monthIndexOf } from '../worker/parse-child/header-dictionary.js';
 import { TOTALS_EPS, type ParsedImport, type ParsedItem } from '../worker/parse-child/parsed-schema.js';
 
 function norm(s: string): string {
@@ -49,6 +58,8 @@ export interface Ks2ColumnDiff {
 
 export interface ImportPreview {
   importFileId: string;
+  /** часть сметы, в которую применится файл */
+  partCode: PartCode;
   kind: 'psdc' | 'ks6';
   header: ParsedImport['header'];
   sections: { tmpId: string; parentTmpId: string | null; name: string; level: number; exists: boolean }[];
@@ -65,7 +76,7 @@ export interface ImportPreview {
   amendmentRequired: boolean;
 }
 
-async function loadStaging(db: Db, importFileId: string) {
+async function loadStaging(db: Db | Tx, importFileId: string) {
   const [file] = await db.select().from(importFiles).where(eq(importFiles.id, importFileId));
   if (!file) throw ApiError.notFound('Файл импорта не найден');
   if (file.status !== 'parsed' && file.status !== 'applied') {
@@ -106,24 +117,50 @@ function matchItems(
   return result;
 }
 
-export async function buildPreview(db: Db, importFileId: string): Promise<ImportPreview> {
-  const { file, parsed } = await loadStaging(db, importFileId);
+/**
+ * Часть, в которую применяется файл. Код задаёт сервер при загрузке
+ * (`import_files.part_code`), клиент его не присылает: подделка параметра
+ * смешала бы ставки 20 % и 22 % в одной смете.
+ */
+function fileePartCode(file: typeof importFiles.$inferSelect): PartCode {
+  return file.partCode ?? 'legacy';
+}
 
+/**
+ * Существующее содержимое ТОЙ ЖЕ части. Сопоставление обязано идти внутри своей
+ * части: у листов 20 % и 22 % совпадает большинство номенклатур, и без фильтра
+ * строки второго листа нашли бы «совпадения» в первом и стали бы «изменёнными»
+ * вместо новых.
+ */
+async function loadExistingForPart(db: Db | Tx, partId: string | null) {
+  if (!partId) return { existingItems: [], existingSections: [], existingDocs: [] };
   const [existingItems, existingSections, existingDocs] = await Promise.all([
     db
       .select()
       .from(workItems)
-      .where(and(eq(workItems.contractId, file.contractId), isNull(workItems.deletedAt)))
+      .where(and(eq(workItems.partId, partId), isNull(workItems.deletedAt)))
       .orderBy(asc(workItems.sortOrder)),
     db
       .select()
       .from(ks6Sections)
-      .where(and(eq(ks6Sections.contractId, file.contractId), isNull(ks6Sections.deletedAt))),
+      .where(and(eq(ks6Sections.partId, partId), isNull(ks6Sections.deletedAt))),
     db
       .select()
       .from(ks2Documents)
-      .where(and(eq(ks2Documents.contractId, file.contractId), isNull(ks2Documents.deletedAt))),
+      .where(and(eq(ks2Documents.partId, partId), isNull(ks2Documents.deletedAt))),
   ]);
+  return { existingItems, existingSections, existingDocs };
+}
+
+export async function buildPreview(db: Db, importFileId: string): Promise<ImportPreview> {
+  const { file, parsed } = await loadStaging(db, importFileId);
+
+  const partCode = fileePartCode(file);
+  const part = await findPart(db, file.contractId, partCode);
+  const { existingItems, existingSections, existingDocs } = await loadExistingForPart(
+    db,
+    part?.id ?? null,
+  );
 
   const matched = matchItems(parsed.items, existingItems);
   const items: ItemDiff[] = [];
@@ -209,9 +246,12 @@ export async function buildPreview(db: Db, importFileId: string): Promise<Import
     }
   }
 
+  // непустота считается по СВОЕЙ части: иначе второй лист книги всегда требовал бы
+  // ДС просто потому, что первый уже применён
   const structureEmpty = existingItems.length === 0;
   return {
     importFileId,
+    partCode,
     kind: parsed.kind,
     header: parsed.header,
     sections,
@@ -252,6 +292,8 @@ export interface ApplyResult {
   ks2Created: number;
   ks2Overwritten: number;
   ks2Skipped: number;
+  /** колонки книги, чей период не относится к этой вкладке — пропущены */
+  ks2OutOfPart: number;
   linesCreated: number;
 }
 
@@ -263,26 +305,46 @@ function monthBounds(iso: string): { from: string; to: string } {
   return { from, to };
 }
 
-export async function applyImport(
-  db: Db,
+/**
+ * Применение одного файла импорта ВНУТРИ уже открытой транзакции.
+ *
+ * Отдельно от `applyImport` ради режима «две страницы КС»: там оба листа должны
+ * лечь одной транзакцией, иначе падение второго оставит применённым первый —
+ * половину сметы, которую пользователь не заказывал.
+ */
+export async function applyImportTx(
+  tx: Tx,
   importFileId: string,
   options: ApplyOptions,
   userId: string,
 ): Promise<ApplyResult> {
-  const { file, parsed } = await loadStaging(db, importFileId);
+  const { file, parsed } = await loadStaging(tx, importFileId);
   if (file.status === 'applied') {
     throw ApiError.conflict('Импорт уже применён', 'already_applied');
   }
 
-  const preview = await buildPreview(db, importFileId);
-  if (preview.amendmentRequired && !options.amendmentId) {
-    throw ApiError.badRequest(
-      'В договоре уже есть строки: для новых строк выберите дополнительное соглашение',
-      'amendment_required',
-    );
+  // блокировка договора на время применения: та же, что берёт очистка сметы
+  await tx.execute(sql`select id from contracts where id = ${file.contractId} for update`);
+
+  const partCode = fileePartCode(file);
+  const part = await ensurePart(tx, file.contractId, partCode);
+
+  const { existingItems, existingSections, existingDocs } = await loadExistingForPart(tx, part.id);
+  const structureEmpty = existingItems.length === 0;
+
+  if (!structureEmpty && !options.amendmentId) {
+    // новые строки в непустую часть — только по ДС
+    const matchedPre = matchItems(parsed.items, existingItems);
+    const hasNew = parsed.items.some((s) => !matchedPre.get(s.tmpId));
+    if (hasNew) {
+      throw ApiError.badRequest(
+        `В части «${PART_TITLE[partCode]}» уже есть строки: для новых строк выберите дополнительное соглашение`,
+        'amendment_required',
+      );
+    }
   }
   if (options.amendmentId) {
-    const [am] = await db
+    const [am] = await tx
       .select({ id: amendments.id, contractId: amendments.contractId })
       .from(amendments)
       .where(and(eq(amendments.id, options.amendmentId), isNull(amendments.deletedAt)));
@@ -292,10 +354,45 @@ export async function applyImport(
   }
 
   const periodOverrides = new Map(options.periods.map((p) => [p.index, p]));
+
+  /**
+   * Границы периода колонки. Если книга дала только название месяца без года
+   * («Январь» на листе «КС6а ндс22%»), год берётся из части: у 22 % он однозначен.
+   */
+  const columnPeriod = (col: ParsedImport['ks2Columns'][number]) => {
+    const override = periodOverrides.get(col.index);
+    let month = col.monthDate;
+    if (!month && col.label) {
+      const idx = monthIndexOf(col.label);
+      const year = baseYearOfPart(partCode);
+      if (idx !== null && year !== null) {
+        month = `${year}-${String(idx + 1).padStart(2, '0')}-01`;
+      }
+    }
+    const bounds = month ? monthBounds(month) : null;
+    return {
+      from: override?.periodFrom ?? col.periodFrom ?? bounds?.from ?? null,
+      to: override?.periodTo ?? col.periodTo ?? bounds?.to ?? null,
+      docDate: override?.docDate ?? col.docDate ?? null,
+      number: override?.number ?? col.number,
+    };
+  };
+
+  /**
+   * Колонки за пределами своей вкладки пропускаются, а не валят импорт.
+   * В реальных книгах лист «по 31.12.2025» содержит ещё и плановый график на годы
+   * вперёд (Сторис.xlsx: 36 колонок до мая 2028), а те же месяцы 2026 года уже
+   * закрыты на листе 22 %. Импортировать их дважды — прямой задвоенный счёт.
+   */
+  const outOfPart = new Set<number>();
   if (options.importHistory) {
     for (const col of parsed.ks2Columns) {
-      const number = periodOverrides.get(col.index)?.number ?? col.number;
-      if (!number) {
+      const period = columnPeriod(col);
+      if (!periodFitsPart(partCode, period.from, period.to)) {
+        outOfPart.add(col.index);
+        continue;
+      }
+      if (!period.number) {
         throw ApiError.badRequest(
           `Колонке выполнения №${col.index + 1} (${col.label ?? 'без подписи'}) не задан номер КС-2`,
           'period_number_required',
@@ -304,24 +401,7 @@ export async function applyImport(
     }
   }
 
-  const [existingItems, existingSections, existingDocs] = await Promise.all([
-    db
-      .select()
-      .from(workItems)
-      .where(and(eq(workItems.contractId, file.contractId), isNull(workItems.deletedAt)))
-      .orderBy(asc(workItems.sortOrder)),
-    db
-      .select()
-      .from(ks6Sections)
-      .where(and(eq(ks6Sections.contractId, file.contractId), isNull(ks6Sections.deletedAt))),
-    db
-      .select()
-      .from(ks2Documents)
-      .where(and(eq(ks2Documents.contractId, file.contractId), isNull(ks2Documents.deletedAt))),
-  ]);
-
   const matched = matchItems(parsed.items, existingItems);
-  const structureEmpty = existingItems.length === 0;
   const amendmentForNew = structureEmpty ? null : (options.amendmentId ?? null);
 
   const result: ApplyResult = {
@@ -331,10 +411,11 @@ export async function applyImport(
     ks2Created: 0,
     ks2Overwritten: 0,
     ks2Skipped: 0,
+    ks2OutOfPart: 0,
     linesCreated: 0,
   };
 
-  await db.transaction(async (tx) => {
+  {
     // --- разделы ---
     const sectionIdByTmp = new Map<string, string>();
     const existingSectionByName = new Map(existingSections.map((s) => [norm(s.name), s.id]));
@@ -366,6 +447,7 @@ export async function applyImport(
           .insert(ks6Sections)
           .values({
             contractId: file.contractId,
+            partId: part.id,
             parentId,
             name: s.name,
             sortOrder: structureEmpty ? s.rowNumber * 10 : (sortCounter += 10),
@@ -415,6 +497,7 @@ export async function applyImport(
         .insert(workItems)
         .values({
           contractId: file.contractId,
+          partId: part.id,
           sectionId,
           kind: s.kind,
           kvrItemId: s.kvrTmpId ? (itemIdByTmp.get(s.kvrTmpId) ?? null) : null,
@@ -441,16 +524,15 @@ export async function applyImport(
     if (options.importHistory && parsed.kind === 'ks6') {
       const docByNumber = new Map(existingDocs.map((d) => [norm(d.number), d]));
       for (const col of parsed.ks2Columns) {
-        const override = periodOverrides.get(col.index);
-        const number = override?.number ?? col.number!;
-        let periodFrom = override?.periodFrom ?? col.periodFrom;
-        let periodTo = override?.periodTo ?? col.periodTo;
-        if (!periodFrom && col.monthDate) {
-          const b = monthBounds(col.monthDate);
-          periodFrom = b.from;
-          periodTo = periodTo ?? b.to;
+        if (outOfPart.has(col.index)) {
+          result.ks2OutOfPart += 1;
+          continue;
         }
-        const docDate = override?.docDate ?? col.docDate;
+        const period = columnPeriod(col);
+        const number = period.number!;
+        const periodFrom = period.from;
+        const periodTo = period.to;
+        const docDate = period.docDate;
 
         const existing = docByNumber.get(norm(number));
         let docId: string;
@@ -478,6 +560,7 @@ export async function applyImport(
             .insert(ks2Documents)
             .values({
               contractId: file.contractId,
+              partId: part.id,
               number,
               docDate: docDate ?? null,
               periodFrom: periodFrom ?? null,
@@ -502,6 +585,7 @@ export async function applyImport(
             .values({
               ks2DocumentId: docId,
               workItemId,
+              partId: part.id,
               qty: cell.qty,
               // суммы истории — как в файле, не пересчитываем qty×price
               amount: cell.amount,
@@ -516,26 +600,36 @@ export async function applyImport(
       }
     }
 
-    // снимок контрольных сумм книги: по ним грид КС-6 показывает расхождение
-    // портала с исходным Excel уже после применения импорта
+    // Снимок контрольных сумм книги — на СВОЕЙ части: у листов 20 % и 22 % свои
+    // «Итого», и общий на договор снимок второй лист затирал бы первым.
     if (parsed.controls.contractTotal || parsed.controls.executedTotal) {
       await tx
-        .update(contracts)
+        .update(estimateParts)
         .set({
           fileContractTotal: parsed.controls.contractTotal,
           fileExecutedTotal: parsed.controls.executedTotal,
           fileTotalsImportId: importFileId,
-          updatedAt: new Date(),
         })
-        .where(eq(contracts.id, file.contractId));
+        .where(eq(estimateParts.id, part.id));
     }
 
     await tx
       .update(importFiles)
       .set({ status: 'applied', updatedAt: new Date() })
       .where(eq(importFiles.id, importFileId));
-  });
+  }
 
+  return result;
+}
+
+/** Применение одного файла импорта своей транзакцией. */
+export async function applyImport(
+  db: Db,
+  importFileId: string,
+  options: ApplyOptions,
+  userId: string,
+): Promise<ApplyResult> {
+  const result = await db.transaction((tx) => applyImportTx(tx, importFileId, options, userId));
   await writeAudit(db, {
     action: 'import.apply',
     userId,
@@ -543,6 +637,70 @@ export async function applyImport(
     entityId: importFileId,
     details: { options: { ...options, periods: options.periods.length }, result },
   });
+  return result;
+}
 
+function addResults(a: ApplyResult, b: ApplyResult): ApplyResult {
+  return {
+    sectionsCreated: a.sectionsCreated + b.sectionsCreated,
+    itemsCreated: a.itemsCreated + b.itemsCreated,
+    itemsUpdated: a.itemsUpdated + b.itemsUpdated,
+    ks2Created: a.ks2Created + b.ks2Created,
+    ks2Overwritten: a.ks2Overwritten + b.ks2Overwritten,
+    ks2Skipped: a.ks2Skipped + b.ks2Skipped,
+    ks2OutOfPart: a.ks2OutOfPart + b.ks2OutOfPart,
+    linesCreated: a.linesCreated + b.linesCreated,
+  };
+}
+
+/**
+ * Применение обеих страниц книги ОДНОЙ транзакцией.
+ *
+ * Последовательные вызовы `applyImport` тут не годятся: если второй лист упадёт,
+ * первый останется применённым, и в портале окажется половина сметы — состояние,
+ * которого нет ни в одном файле.
+ */
+export async function applyImportBatch(
+  db: Db,
+  batchId: string,
+  optionsByImportId: Map<string, ApplyOptions>,
+  userId: string,
+): Promise<ApplyResult> {
+  const files = await db
+    .select({ id: importFiles.id, partCode: importFiles.partCode })
+    .from(importFiles)
+    .where(eq(importFiles.batchId, batchId));
+  if (files.length === 0) throw ApiError.notFound('Пара файлов импорта не найдена');
+
+  // порядок вкладок: сначала 20 %, потом 22 % — так номера КС-2 и sort_order
+  // ложатся в том же порядке, в каком пользователь их видит
+  const ordered = [...files].sort((a, b) => (a.partCode ?? '').localeCompare(b.partCode ?? ''));
+
+  const result = await db.transaction(async (tx) => {
+    let acc: ApplyResult = {
+      sectionsCreated: 0,
+      itemsCreated: 0,
+      itemsUpdated: 0,
+      ks2Created: 0,
+      ks2Overwritten: 0,
+      ks2Skipped: 0,
+      ks2OutOfPart: 0,
+      linesCreated: 0,
+    };
+    for (const f of ordered) {
+      const opts = optionsByImportId.get(f.id);
+      if (!opts) throw ApiError.badRequest(`Не заданы параметры применения для листа`, 'bad_batch');
+      acc = addResults(acc, await applyImportTx(tx, f.id, opts, userId));
+    }
+    return acc;
+  });
+
+  await writeAudit(db, {
+    action: 'import.apply_batch',
+    userId,
+    entityType: 'import',
+    entityId: batchId,
+    details: { files: ordered.map((f) => ({ id: f.id, part: f.partCode })), result },
+  });
   return result;
 }

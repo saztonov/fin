@@ -15,6 +15,8 @@ import type {
   ImportPreview,
   Ks2Document,
   Ks6Grid,
+  ObjectSummary,
+  PartCode,
   VatView,
 } from './types';
 
@@ -27,6 +29,14 @@ export function useObjects() {
   });
 }
 
+/** Объекты с суммой договора, выполнением и остатком — для карточек стартового экрана. */
+export function useObjectsSummary() {
+  return useQuery({
+    queryKey: ['objects-summary'],
+    queryFn: () => api<ObjectSummary[]>('/objects/summary'),
+  });
+}
+
 export function useSaveObject() {
   const qc = useQueryClient();
   return useMutation({
@@ -34,7 +44,10 @@ export function useSaveObject() {
       input.id
         ? api<ConstructionObject>(`/objects/${input.id}`, { method: 'PATCH', body: input })
         : api<ConstructionObject>('/objects', { body: input }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['objects'] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['objects'] });
+      qc.invalidateQueries({ queryKey: ['objects-summary'] });
+    },
   });
 }
 
@@ -42,7 +55,10 @@ export function useDeleteObject() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: string) => api(`/objects/${id}`, { method: 'DELETE' }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['objects'] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['objects'] });
+      qc.invalidateQueries({ queryKey: ['objects-summary'] });
+    },
   });
 }
 
@@ -65,6 +81,7 @@ export function useSaveContract(objectId: string | null) {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['contract', objectId] });
       void qc.invalidateQueries({ queryKey: ['ks6', objectId] });
+      void qc.invalidateQueries({ queryKey: ['objects-summary'] });
     },
   });
 }
@@ -87,6 +104,7 @@ export function useSaveAmendment(objectId: string | null) {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['contract', objectId] });
       void qc.invalidateQueries({ queryKey: ['ks6', objectId] });
+      void qc.invalidateQueries({ queryKey: ['objects-summary'] });
     },
   });
 }
@@ -98,6 +116,7 @@ export function useDeleteAmendment(objectId: string | null) {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['contract', objectId] });
       void qc.invalidateQueries({ queryKey: ['ks6', objectId] });
+      void qc.invalidateQueries({ queryKey: ['objects-summary'] });
     },
   });
 }
@@ -109,10 +128,15 @@ export function useDeleteAmendment(objectId: string | null) {
  * берётся из кеша, а не пересчитывается сервером заново. Инвалидация по префиксу
  * `['ks6', objectId]` гасит оба режима сразу.
  */
-export function useKs6Grid(objectId: string | null, vatView: VatView = 'gross') {
+export function useKs6Grid(
+  objectId: string | null,
+  vatView: VatView = 'gross',
+  part?: PartCode | null,
+) {
   return useQuery({
-    queryKey: ['ks6', objectId, vatView],
-    queryFn: () => api<Ks6Grid>(`/objects/${objectId}/ks6?vat=${vatView}`),
+    queryKey: ['ks6', objectId, vatView, part ?? null],
+    queryFn: () =>
+      api<Ks6Grid>(`/objects/${objectId}/ks6?vat=${vatView}${part ? `&part=${part}` : ''}`),
     enabled: Boolean(objectId),
     placeholderData: keepPreviousData,
   });
@@ -128,8 +152,13 @@ export function useCreateKs2(objectId: string | null) {
       docDate?: string | null;
       periodFrom?: string | null;
       periodTo?: string | null;
+      /** вкладка, в которой создаётся документ */
+      part?: PartCode | null;
     }) => api<Ks2Document>(`/objects/${objectId}/ks2`, { body: input }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['ks6', objectId] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['ks6', objectId] });
+      qc.invalidateQueries({ queryKey: ['objects-summary'] });
+    },
   });
 }
 
@@ -140,7 +169,10 @@ export function useKs2Action(objectId: string | null) {
       action === 'delete'
         ? api(`/ks2/${id}`, { method: 'DELETE' })
         : api(`/ks2/${id}/${action}`, { method: 'POST' }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['ks6', objectId] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['ks6', objectId] });
+      qc.invalidateQueries({ queryKey: ['objects-summary'] });
+    },
   });
 }
 
@@ -152,7 +184,31 @@ export function useClearKs2(objectId: string | null) {
       api<{ message: string; documents: number; lines: number }>(`/objects/${objectId}/ks2`, {
         method: 'DELETE',
       }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['ks6', objectId] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['ks6', objectId] });
+      qc.invalidateQueries({ queryKey: ['objects-summary'] });
+    },
+  });
+}
+
+/**
+ * Полная очистка сметы объекта (только admin): строки, разделы и вся история КС-2.
+ * Гасим и договор, и сводку по объектам: после очистки меняются обе картины.
+ */
+export function useClearEstimate(objectId: string | null) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () =>
+      api<{ message: string; sections: number; items: number; documents: number; lines: number }>(
+        `/objects/${objectId}/estimate`,
+        { method: 'DELETE' },
+      ),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['ks6', objectId] });
+      qc.invalidateQueries({ queryKey: ['contract', objectId] });
+      qc.invalidateQueries({ queryKey: ['objects-summary'] });
+      qc.invalidateQueries({ queryKey: ['imports', objectId] });
+    },
   });
 }
 
@@ -164,7 +220,10 @@ export function useSaveKs2Lines(objectId: string | null) {
         method: 'PUT',
         body: { lines },
       }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['ks6', objectId] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['ks6', objectId] });
+      qc.invalidateQueries({ queryKey: ['objects-summary'] });
+    },
   });
 }
 
@@ -173,13 +232,39 @@ export function useSaveKs2Lines(objectId: string | null) {
 export function useUploadImport(objectId: string | null) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ file, kind }: { file: File; kind: 'psdc' | 'ks6' }) => {
+    mutationFn: ({
+      file,
+      kind,
+      part,
+    }: {
+      file: File;
+      kind: 'psdc' | 'ks6';
+      /** часть сметы для этого листа; по умолчанию единая смета */
+      part?: PartCode;
+    }) => {
       const fd = new FormData();
       fd.append('kind', kind);
+      if (part) fd.append('part', part);
       fd.append('file', file);
       return api<ImportFileInfo>(`/objects/${objectId}/imports`, { formData: fd });
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: ['imports', objectId] }),
+  });
+}
+
+/**
+ * Вторая страница КС из той же книги: файл не перезагружается, создаётся парная
+ * запись импорта со своим листом. Обе применяются потом одной транзакцией.
+ */
+export function useSplitImport(objectId: string | null) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ importId, sheet }: { importId: string; sheet: string }) =>
+      api<{ id: string; batchId: string }>(`/imports/${importId}/split`, { body: { sheet } }),
+    onSuccess: (_data, vars) => {
+      void qc.invalidateQueries({ queryKey: ['import', vars.importId] });
+      void qc.invalidateQueries({ queryKey: ['imports', objectId] });
+    },
   });
 }
 
@@ -234,6 +319,26 @@ export function useApplyImport(objectId: string | null) {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['ks6', objectId] });
       void qc.invalidateQueries({ queryKey: ['imports', objectId] });
+      void qc.invalidateQueries({ queryKey: ['objects-summary'] });
+    },
+  });
+}
+
+/**
+ * Применение обеих страниц книги одним запросом: сервер кладёт их в одну
+ * транзакцию, поэтому падение второго листа откатывает и первый.
+ */
+export function useApplyImportBatch(objectId: string | null) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ batchId, parts }: { batchId: string; parts: ApplyImportInput[] }) =>
+      api<ApplyResult>(`/imports/batch/${batchId}/apply`, {
+        body: { parts: parts.map((p) => ({ ...p, approveImported: true })) },
+      }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['ks6', objectId] });
+      void qc.invalidateQueries({ queryKey: ['imports', objectId] });
+      void qc.invalidateQueries({ queryKey: ['objects-summary'] });
     },
   });
 }

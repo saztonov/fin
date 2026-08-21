@@ -4,7 +4,7 @@ import { constructionObjects } from '../../db/schema/index.js';
 import { and, eq, isNull } from 'drizzle-orm';
 import { ApiError } from '../../lib/errors.js';
 import { vatFromGross, vatRateOn } from '../../lib/money.js';
-import { getKs6Grid } from '../ks6.service.js';
+import { getKs6Grid, type Ks6Grid } from '../ks6.service.js';
 import { sanitizeCellText } from './sanitize.js';
 
 const MONEY_FMT = '#,##0.00';
@@ -33,18 +33,48 @@ function toNumKeepZero(s: string | null | undefined): number | null {
 }
 
 /** Выгрузка КС-6 (накопительная ведомость) со всеми периодами, близко к образцу. */
+/**
+ * Выгрузка КС-6 (накопительная ведомость).
+ *
+ * При разделённой смете книга собирается из двух листов — «НДС 20%» и «НДС 22%»:
+ * это те самые две страницы, из которых её и загружали. Складывать части в один
+ * лист нельзя — они перекрываются.
+ */
 export async function exportKs6(db: Db, objectId: string): Promise<{ buffer: Buffer; filename: string }> {
   const [object] = await db
     .select()
     .from(constructionObjects)
     .where(and(eq(constructionObjects.id, objectId), isNull(constructionObjects.deletedAt)));
   if (!object) throw ApiError.notFound('Объект не найден');
-  const grid = await getKs6Grid(db, objectId);
-  if (!grid.contract) throw ApiError.badRequest('По объекту не заведён договор', 'no_contract');
+
+  const base = await getKs6Grid(db, objectId);
+  if (!base.contract) throw ApiError.badRequest('По объекту не заведён договор', 'no_contract');
 
   const wb = new ExcelJS.Workbook();
   wb.creator = 'Портал КС';
-  const ws = wb.addWorksheet('КС-6', {
+
+  const parts = base.availableParts.filter((p) => p.code !== 'legacy');
+  if (parts.length > 0) {
+    for (const part of parts) {
+      const grid = await getKs6Grid(db, objectId, { part: part.code });
+      writeKs6Sheet(wb, part.title, grid, object);
+    }
+  } else {
+    writeKs6Sheet(wb, 'КС-6', base, object);
+  }
+
+  const buffer = Buffer.from(await wb.xlsx.writeBuffer());
+  return { buffer, filename: `KS-6_${object.code}.xlsx` };
+}
+
+function writeKs6Sheet(
+  wb: ExcelJS.Workbook,
+  sheetTitle: string,
+  grid: Ks6Grid,
+  object: typeof constructionObjects.$inferSelect,
+): void {
+  if (!grid.contract) return;
+  const ws = wb.addWorksheet(sheetTitle, {
     views: [{ state: 'frozen', xSplit: 4, ySplit: 0 }],
   });
 
@@ -262,7 +292,4 @@ export async function exportKs6(db: Db, objectId: string): Promise<{ buffer: Buf
   // сходиться с исходной ведомостью при обратной проверке qty × price
   for (const c of [6, 7, 8]) ws.getColumn(c).numFmt = PRICE_FMT;
   ws.views = [{ state: 'frozen', xSplit: 4, ySplit: subRow }];
-
-  const buffer = Buffer.from(await wb.xlsx.writeBuffer());
-  return { buffer, filename: `KS-6_${object.code}.xlsx` };
 }

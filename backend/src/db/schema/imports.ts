@@ -29,6 +29,10 @@ export const importFiles = pgTable(
     mimeDetected: text('mime_detected').notNull().default(''),
     /** лист книги, выбранный пользователем; null — подбирается автоматически */
     sheetName: text('sheet_name'),
+    /** общий id двух записей одной книги в режиме «две страницы КС» */
+    batchId: uuid('batch_id'),
+    /** в какую часть сметы применяется лист; задаёт сервер, не клиент */
+    partCode: text('part_code', { enum: ['legacy', 'vat20', 'vat22'] }),
     status: text('status', {
       enum: ['uploaded', 'parsing', 'parsed', 'parse_failed', 'applied', 'discarded'],
     })
@@ -39,7 +43,10 @@ export const importFiles = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [index('import_files_contract_idx').on(t.contractId, t.createdAt)],
+  (t) => [
+    index('import_files_contract_idx').on(t.contractId, t.createdAt),
+    index('import_files_batch_idx').on(t.batchId),
+  ],
 );
 
 export const importStaging = pgTable(

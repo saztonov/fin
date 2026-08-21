@@ -182,7 +182,10 @@ export function useKs6Columns({
             align: 'right',
             className: 'ks6-cell-num',
             shouldCellUpdate: cellChanged,
-            render: (_, row) => (row.rowType === 'nom' ? <PriceText value={row.unitPrice} /> : null),
+            render: (_, row) =>
+              row.rowType === 'nom' ? (
+                <PriceText value={row.unitPrice} precision={vatView === 'net' ? 2 : 6} />
+              ) : null,
           },
           {
             title: 'Всего',

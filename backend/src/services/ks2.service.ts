@@ -14,9 +14,14 @@ export async function getDocOrThrow(db: Db, docId: string) {
   return doc;
 }
 
+/**
+ * Номер КС-2 уникален внутри ЧАСТИ, а не договора: у частей 20 % и 22 % свои
+ * сквозные нумерации, и КС-2 №1 законно существует в обеих.
+ */
 export async function assertUniqueNumber(
   db: Db,
   contractId: string,
+  partId: string,
   number: string,
   exceptId?: string,
 ) {
@@ -26,12 +31,13 @@ export async function assertUniqueNumber(
     .where(
       and(
         eq(ks2Documents.contractId, contractId),
+        eq(ks2Documents.partId, partId),
         eq(ks2Documents.number, number),
         isNull(ks2Documents.deletedAt),
       ),
     );
   if (dup.some((d) => d.id !== exceptId)) {
-    throw ApiError.conflict('КС-2 с таким номером уже есть по договору', 'ks2_number_taken');
+    throw ApiError.conflict('КС-2 с таким номером уже есть в этой части сметы', 'ks2_number_taken');
   }
 }
 
@@ -62,6 +68,7 @@ export async function setLines(
       id: workItems.id,
       kind: workItems.kind,
       contractId: workItems.contractId,
+      partId: workItems.partId,
       unitPrice: workItems.unitPrice,
     })
     .from(workItems)
@@ -71,6 +78,12 @@ export async function setLines(
     const item = itemById.get(line.workItemId);
     if (!item || item.contractId !== doc.contractId) {
       throw ApiError.badRequest('Строка работ не принадлежит договору', 'bad_work_item');
+    }
+    // совпадения договора мало: части 20 % и 22 % живут в одном договоре, и без
+    // этой проверки документ одной части принял бы строки другой (в БД это ловит
+    // составной FK, здесь — чтобы вернуть внятную ошибку, а не 500)
+    if (item.partId !== doc.partId) {
+      throw ApiError.badRequest('Строка работ из другой части сметы', 'bad_work_item_part');
     }
     if (item.kind !== 'nomenclature') {
       throw ApiError.badRequest('Выполнение вносится только по номенклатуре', 'kvr_not_editable');
@@ -94,6 +107,7 @@ export async function setLines(
         .values({
           ks2DocumentId: docId,
           workItemId: line.workItemId,
+          partId: doc.partId,
           qty,
           amount,
           updatedBy: userId,

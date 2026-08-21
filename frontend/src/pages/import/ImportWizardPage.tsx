@@ -3,56 +3,47 @@ import {
   Alert,
   Button,
   Card,
-  Checkbox,
-  DatePicker,
-  Input,
   Progress,
   Radio,
   Result,
-  Segmented,
   Select,
   Space,
   Spin,
   Steps,
-  Table,
+  Tabs,
   Typography,
   Upload,
 } from 'antd';
-import dayjs from 'dayjs';
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import {
   useApplyImport,
+  useApplyImportBatch,
   useContract,
   useImportPreview,
   useImportStatus,
   useObjects,
   useReparseImport,
+  useSplitImport,
   useUploadImport,
 } from '../../api/hooks';
-import type { ApplyResult, ItemDiff, ItemDiffStatus } from '../../api/types';
+import type { ApplyResult, ImportFileInfo, PartCode } from '../../api/types';
 import { useAuth } from '../../auth/AuthContext';
-import { fmtMoney, fmtMonth } from '../../shared/lib/formatters';
 import { useFeedback } from '../../shared/lib/useFeedback';
-import { MoneyText } from '../../shared/ui/MoneyText';
-import { QtyText } from '../../shared/ui/QtyText';
-import { StatusTag } from '../../shared/ui/StatusTag';
+import {
+  emptyPartState,
+  ImportPartPreview,
+  partReady,
+  type PartApplyState,
+} from './ImportPartPreview';
 
-interface PeriodDraft {
-  index: number;
-  number: string;
-  periodFrom: string | null;
-  periodTo: string | null;
-  label: string | null;
-  cellCount: number;
-  totalAmount: string;
-  existingDocStatus: string | null;
-}
+type Mode = 'single' | 'split';
 
-function monthBounds(iso: string): { from: string; to: string } {
-  const d = dayjs(iso);
-  return { from: d.startOf('month').format('YYYY-MM-DD'), to: d.endOf('month').format('YYYY-MM-DD') };
-}
+const PART_LABEL: Record<PartCode, string> = {
+  legacy: 'Смета',
+  vat20: 'НДС 20%',
+  vat22: 'НДС 22%',
+};
 
 export function ImportWizardPage() {
   const { user } = useAuth();
@@ -63,48 +54,56 @@ export function ImportWizardPage() {
   const objects = useObjects();
   const contract = useContract(objectId);
   const upload = useUploadImport(objectId);
-  const [importId, setImportId] = useState<string | null>(null);
-  const [kind, setKind] = useState<'ks6' | 'psdc'>('ks6');
-  const status = useImportStatus(importId);
-  const parsed = status.data?.status === 'parsed';
-  const preview = useImportPreview(importId, parsed);
+  const split = useSplitImport(objectId);
   const apply = useApplyImport(objectId);
+  const applyBatch = useApplyImportBatch(objectId);
 
-  const [filter, setFilter] = useState<'all' | ItemDiffStatus>('all');
-  const [periods, setPeriods] = useState<PeriodDraft[]>([]);
-  const [importHistory, setImportHistory] = useState(true);
-  const [applyChanged, setApplyChanged] = useState(false);
-  const [overwriteKs2, setOverwriteKs2] = useState(false);
-  const [amendmentId, setAmendmentId] = useState<string | null>(null);
+  const [kind, setKind] = useState<'ks6' | 'psdc'>('ks6');
+  const [mode, setMode] = useState<Mode>('single');
+  const [firstId, setFirstId] = useState<string | null>(null);
+  const [secondId, setSecondId] = useState<string | null>(null);
+  const [batchId, setBatchId] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<PartCode>('vat20');
   const [result, setResult] = useState<ApplyResult | null>(null);
 
-  // черновики реквизитов периодов из предпросмотра (+подстановка границ месяца)
-  useEffect(() => {
-    if (!preview.data) return;
-    setPeriods(
-      preview.data.ks2Columns.map((c) => {
-        const bounds = !c.periodFrom && c.monthDate ? monthBounds(c.monthDate) : null;
-        return {
-          index: c.index,
-          number: c.number ?? '',
-          periodFrom: c.periodFrom ?? bounds?.from ?? null,
-          periodTo: c.periodTo ?? bounds?.to ?? null,
-          label: c.label,
-          cellCount: c.cellCount,
-          totalAmount: c.totalAmount,
-          existingDocStatus: c.existingDocStatus,
-        };
-      }),
-    );
-  }, [preview.data]);
+  // состояние применения по каждой странице отдельно: периоды и флаги у листов свои
+  const [partStates, setPartStates] = useState<Record<string, PartApplyState>>({});
+  const stateOf = (id: string) => partStates[id] ?? emptyPartState;
+  const setStateOf = (id: string, next: PartApplyState) =>
+    setPartStates((prev) => ({ ...prev, [id]: next }));
+
+  const firstStatus = useImportStatus(firstId);
+  const secondStatus = useImportStatus(secondId);
+  const firstParsed = firstStatus.data?.status === 'parsed';
+  const secondParsed = secondStatus.data?.status === 'parsed';
+
+  const firstPreview = useImportPreview(firstId, firstParsed);
+  const secondPreview = useImportPreview(secondId, secondParsed);
 
   const objectLabel = useMemo(() => {
     const o = objects.data?.find((x) => x.id === objectId);
     return o ? `${o.code} — ${o.name}` : '';
   }, [objects.data, objectId]);
 
+  const reset = () => {
+    setFirstId(null);
+    setSecondId(null);
+    setBatchId(null);
+    setPartStates({});
+  };
+
   if (!objectId) {
-    return <Result status="warning" title="Не выбран объект" extra={<Link to="/ks"><Button>К странице КС</Button></Link>} />;
+    return (
+      <Result
+        status="warning"
+        title="Не выбран объект"
+        extra={
+          <Link to="/ks">
+            <Button>К странице КС</Button>
+          </Link>
+        }
+      />
+    );
   }
   if (contract.data && !contract.data.contract) {
     return (
@@ -121,16 +120,55 @@ export function ImportWizardPage() {
     );
   }
 
-  const step = result ? 3 : parsed ? 2 : importId ? 1 : 0;
-  const failed = status.data?.status === 'parse_failed';
+  const contractIsNet = contract.data?.contract?.vatMode === 'net';
+  const failed = firstStatus.data?.status === 'parse_failed' || secondStatus.data?.status === 'parse_failed';
 
-  const filteredItems: ItemDiff[] =
-    preview.data?.items.filter((i) => filter === 'all' || i.status === filter) ?? [];
+  // в режиме двух страниц шаг «Разбор» держит нас, пока не выбран второй лист
+  const needSecondSheet = mode === 'split' && firstParsed && !secondId;
+  const bothParsed = mode === 'single' ? firstParsed : firstParsed && secondParsed;
+  const step = result ? 3 : bothParsed && !needSecondSheet ? 2 : firstId ? 1 : 0;
 
-  const canApply =
-    Boolean(preview.data) &&
-    (!preview.data!.amendmentRequired || Boolean(amendmentId)) &&
-    (!importHistory || periods.every((p) => p.cellCount === 0 || p.number.trim().length > 0));
+  const firstReady = firstPreview.data
+    ? partReady(stateOf(firstId!), firstPreview.data.amendmentRequired)
+    : false;
+  const secondReady = secondPreview.data
+    ? partReady(stateOf(secondId!), secondPreview.data.amendmentRequired)
+    : false;
+  const canApply = mode === 'single' ? firstReady : firstReady && secondReady;
+
+  const applyInputFor = (id: string) => {
+    const s = stateOf(id);
+    return {
+      importId: id,
+      amendmentId: s.amendmentId,
+      applyChanged: s.applyChanged,
+      importHistory: kind === 'ks6' && s.importHistory,
+      overwriteKs2: s.overwriteKs2,
+      periods: s.periods
+        .filter((p) => p.cellCount > 0)
+        .map((p) => ({
+          index: p.index,
+          number: p.number.trim(),
+          periodFrom: p.periodFrom,
+          periodTo: p.periodTo,
+        })),
+    };
+  };
+
+  const doApply = async () => {
+    try {
+      const res =
+        mode === 'split' && batchId
+          ? await applyBatch.mutateAsync({
+              batchId,
+              parts: [applyInputFor(firstId!), applyInputFor(secondId!)],
+            })
+          : await apply.mutateAsync(applyInputFor(firstId!));
+      setResult(res);
+    } catch (e) {
+      message.error((e as Error).message);
+    }
+  };
 
   return (
     <div style={{ maxWidth: 1100, margin: '0 auto' }}>
@@ -141,12 +179,7 @@ export function ImportWizardPage() {
         size="small"
         current={step}
         style={{ marginBottom: 16 }}
-        items={[
-          { title: 'Файл' },
-          { title: 'Разбор' },
-          { title: 'Предпросмотр' },
-          { title: 'Готово' },
-        ]}
+        items={[{ title: 'Файл' }, { title: 'Разбор' }, { title: 'Предпросмотр' }, { title: 'Готово' }]}
       />
 
       {step === 0 ? (
@@ -160,14 +193,34 @@ export function ImportWizardPage() {
                 { value: 'psdc', label: 'ПСДЦ (только структура и договорные данные)' },
               ]}
             />
+            <Radio.Group
+              value={mode}
+              onChange={(e) => setMode(e.target.value as Mode)}
+              disabled={contractIsNet}
+              options={[
+                { value: 'single', label: 'Одна страница КС' },
+                { value: 'split', label: 'Две страницы КС (НДС 20% и НДС 22%)' },
+              ]}
+            />
+            <Typography.Text type="secondary">
+              {contractIsNet
+                ? 'Договор ведётся без НДС — разделение по ставкам к нему неприменимо.'
+                : mode === 'single'
+                  ? 'Одна таблица от начала объекта до конца.'
+                  : 'Первая таблица — по декабрь 2025 включительно (НДС 20%), вторая — с января 2026 (НДС 22%). Листы книги указываются после разбора; наборы строк у них могут отличаться.'}
+            </Typography.Text>
             <Upload.Dragger
               accept=".xlsx"
               maxCount={1}
               showUploadList={false}
               customRequest={async ({ file }) => {
                 try {
-                  const created = await upload.mutateAsync({ file: file as File, kind });
-                  setImportId(created.id);
+                  const created = await upload.mutateAsync({
+                    file: file as File,
+                    kind,
+                    part: mode === 'split' ? 'vat20' : undefined,
+                  });
+                  setFirstId(created.id);
                 } catch (e) {
                   message.error((e as Error).message);
                 }
@@ -193,280 +246,139 @@ export function ImportWizardPage() {
             <Result
               status="error"
               title="Файл не разобран"
-              subTitle={status.data?.error ?? 'Неизвестная ошибка'}
-              extra={
-                <Button
-                  onClick={() => {
-                    setImportId(null);
-                  }}
-                >
-                  Загрузить другой файл
-                </Button>
-              }
+              subTitle={firstStatus.data?.error ?? secondStatus.data?.error ?? 'Неизвестная ошибка'}
+              extra={<Button onClick={reset}>Загрузить другой файл</Button>}
+            />
+          ) : needSecondSheet ? (
+            <SecondSheetPicker
+              firstStatus={firstStatus.data}
+              loading={split.isPending}
+              onPick={async (sheet) => {
+                try {
+                  const res = await split.mutateAsync({ importId: firstId!, sheet });
+                  setSecondId(res.id);
+                  setBatchId(res.batchId);
+                } catch (e) {
+                  message.error((e as Error).message);
+                }
+              }}
+              onCancel={reset}
             />
           ) : (
             <Space direction="vertical" align="center" style={{ width: '100%', padding: 24 }}>
-              <Progress type="circle" percent={status.data?.status === 'parsing' ? 60 : 30} format={() => ''} />
+              <Progress
+                type="circle"
+                percent={firstStatus.data?.status === 'parsing' ? 60 : 30}
+                format={() => ''}
+              />
               <Typography.Text type="secondary">
-                Файл «{status.data?.originalName}» разбирается в фоновом режиме…
+                Файл «{firstStatus.data?.originalName}» разбирается в фоновом режиме…
               </Typography.Text>
             </Space>
           )}
         </Card>
       ) : null}
 
-      {step === 2 && preview.data ? (
+      {step === 2 ? (
         <Space direction="vertical" size={16} style={{ width: '100%' }}>
-          <SheetPicker
-            importId={importId}
-            objectId={objectId}
-            usedSheet={status.data?.summary?.sheetName ?? status.data?.sheetName ?? null}
-            candidates={status.data?.summary?.sheetCandidates ?? []}
-            vat={status.data?.summary?.vat ?? null}
-          />
-          {preview.data.warnings.length > 0 ? (
-            <Alert
-              type="warning"
-              showIcon
-              title={`Предупреждения разбора (${preview.data.warnings.length})`}
-              description={
-                <ul style={{ margin: 0, paddingLeft: 18, maxHeight: 160, overflow: 'auto' }}>
-                  {preview.data.warnings.map((w, i) => (
-                    <li key={i}>{w}</li>
-                  ))}
-                </ul>
-              }
-            />
-          ) : null}
-
-          <Card size="small" title="Контрольные суммы">
-            <Space size={24} wrap>
-              <span>
-                Итого по договору (файл):{' '}
-                <b className="num">{fmtMoney(preview.data.controls.contractTotal) || '—'}</b>
-              </span>
-              <span>
-                Σ номенклатур: <b className="num">{fmtMoney(preview.data.controls.computedContractTotal)}</b>
-              </span>
-              {preview.data.kind === 'ks6' ? (
-                <span>
-                  Σ помесячных выполнений:{' '}
-                  <b className="num">{fmtMoney(preview.data.controls.computedExecutedTotal)}</b>
-                </span>
-              ) : null}
-            </Space>
-          </Card>
-
-          <Card
-            size="small"
-            title="Строки сметы"
-            extra={
-              <Segmented
-                value={filter}
-                onChange={(v) => setFilter(v as typeof filter)}
-                options={[
-                  { value: 'all', label: `Все (${preview.data.items.length})` },
-                  { value: 'new', label: `Новые (${preview.data.counts.new})` },
-                  { value: 'changed', label: `Изменённые (${preview.data.counts.changed})` },
-                  { value: 'match', label: `Совпадают (${preview.data.counts.match})` },
-                  { value: 'missing', label: `Нет в файле (${preview.data.counts.missing})` },
-                ]}
+          {mode === 'single' ? (
+            <>
+              <SheetPicker
+                importId={firstId}
+                objectId={objectId}
+                usedSheet={firstStatus.data?.summary?.sheetName ?? firstStatus.data?.sheetName ?? null}
+                candidates={firstStatus.data?.summary?.sheetCandidates ?? []}
+                vat={firstStatus.data?.summary?.vat ?? null}
               />
-            }
-          >
-            <Table<ItemDiff>
-              size="small"
-              rowKey={(r) => r.staged?.tmpId ?? r.existingId ?? Math.random().toString()}
-              dataSource={filteredItems}
-              pagination={{ pageSize: 50, showSizeChanger: false }}
-              columns={[
-                {
-                  title: 'Статус',
-                  dataIndex: 'status',
-                  width: 110,
-                  render: (s: ItemDiffStatus) => <StatusTag status={s} compact />,
-                },
-                { title: 'Код КВР', width: 140, render: (_, r) => r.staged?.kvrCode ?? '' },
-                {
-                  title: 'Наименование',
-                  ellipsis: true,
-                  render: (_, r) => r.staged?.name ?? r.existingName ?? '',
-                },
-                { title: 'Ед.', width: 70, render: (_, r) => r.staged?.unit ?? '' },
-                {
-                  title: 'Кол-во',
-                  width: 100,
-                  align: 'right',
-                  render: (_, r) => <QtyText value={r.staged?.contractQty ?? null} />,
-                },
-                {
-                  title: 'Всего, ₽',
-                  width: 140,
-                  align: 'right',
-                  render: (_, r) => <MoneyText value={r.staged?.contractTotal ?? null} />,
-                },
-                {
-                  title: 'Изменения',
-                  width: 240,
-                  render: (_, r) =>
-                    r.changes ? (
-                      <Space direction="vertical" size={0}>
-                        {r.changes.map((c) => (
-                          <Typography.Text key={c.field} style={{ fontSize: 12 }}>
-                            {c.field}: <Typography.Text delete type="secondary">{fmtMoney(c.from)}</Typography.Text>{' '}
-                            → <b className="num">{fmtMoney(c.to)}</b>
-                          </Typography.Text>
-                        ))}
+              <ImportPartPreview
+                importId={firstId!}
+                enabled={firstParsed}
+                isAdmin={user?.role === 'admin'}
+                amendments={contract.data?.amendments ?? []}
+                state={stateOf(firstId!)}
+                onChange={(s) => setStateOf(firstId!, s)}
+              />
+            </>
+          ) : (
+            <>
+              <Alert
+                type="info"
+                showIcon
+                title="Две страницы КС"
+                description="Каждая вкладка применяется в свою часть сметы. Импорт выполняется одной операцией: если вторая страница не пройдёт, первая тоже не применится."
+              />
+              <Tabs
+                activeKey={activeTab}
+                onChange={(k) => setActiveTab(k as PartCode)}
+                items={[
+                  {
+                    key: 'vat20',
+                    label: `${PART_LABEL.vat20}${firstReady ? '' : ' •'}`,
+                    children: (
+                      <Space direction="vertical" size={16} style={{ width: '100%' }}>
+                        <SheetPicker
+                          importId={firstId}
+                          objectId={objectId}
+                          usedSheet={
+                            firstStatus.data?.summary?.sheetName ?? firstStatus.data?.sheetName ?? null
+                          }
+                          candidates={firstStatus.data?.summary?.sheetCandidates ?? []}
+                          vat={firstStatus.data?.summary?.vat ?? null}
+                        />
+                        <ImportPartPreview
+                          importId={firstId!}
+                          enabled={firstParsed}
+                          isAdmin={user?.role === 'admin'}
+                          amendments={contract.data?.amendments ?? []}
+                          state={stateOf(firstId!)}
+                          onChange={(s) => setStateOf(firstId!, s)}
+                        />
                       </Space>
-                    ) : null,
-                },
-              ]}
-            />
-          </Card>
-
-          {preview.data.kind === 'ks6' && periods.length > 0 ? (
-            <Card size="small" title="Периоды КС-2 из файла">
-              <Table<PeriodDraft>
-                size="small"
-                rowKey="index"
-                dataSource={periods}
-                pagination={false}
-                columns={[
-                  { title: 'Подпись в файле', dataIndex: 'label', ellipsis: true, render: (v) => v ?? <Typography.Text type="secondary">без подписи</Typography.Text> },
-                  {
-                    title: '№ КС-2',
-                    width: 120,
-                    render: (_, row) => (
-                      <Input
-                        size="small"
-                        status={row.cellCount > 0 && !row.number.trim() ? 'error' : undefined}
-                        value={row.number}
-                        onChange={(e) =>
-                          setPeriods((prev) =>
-                            prev.map((p) => (p.index === row.index ? { ...p, number: e.target.value } : p)),
-                          )
-                        }
-                      />
                     ),
                   },
                   {
-                    title: 'Период',
-                    width: 260,
-                    render: (_, row) => (
-                      <DatePicker.RangePicker
-                        size="small"
-                        format="DD.MM.YYYY"
-                        value={[
-                          row.periodFrom ? dayjs(row.periodFrom) : null,
-                          row.periodTo ? dayjs(row.periodTo) : null,
-                        ]}
-                        onChange={(range) =>
-                          setPeriods((prev) =>
-                            prev.map((p) =>
-                              p.index === row.index
-                                ? {
-                                    ...p,
-                                    periodFrom: range?.[0]?.format('YYYY-MM-DD') ?? null,
-                                    periodTo: range?.[1]?.format('YYYY-MM-DD') ?? null,
-                                  }
-                                : p,
-                            ),
-                          )
-                        }
-                      />
+                    key: 'vat22',
+                    label: `${PART_LABEL.vat22}${secondReady ? '' : ' •'}`,
+                    children: (
+                      <Space direction="vertical" size={16} style={{ width: '100%' }}>
+                        <SheetPicker
+                          importId={secondId}
+                          objectId={objectId}
+                          usedSheet={
+                            secondStatus.data?.summary?.sheetName ?? secondStatus.data?.sheetName ?? null
+                          }
+                          candidates={secondStatus.data?.summary?.sheetCandidates ?? []}
+                          vat={secondStatus.data?.summary?.vat ?? null}
+                        />
+                        <ImportPartPreview
+                          importId={secondId!}
+                          enabled={secondParsed}
+                          isAdmin={user?.role === 'admin'}
+                          amendments={contract.data?.amendments ?? []}
+                          state={stateOf(secondId!)}
+                          onChange={(s) => setStateOf(secondId!, s)}
+                        />
+                      </Space>
                     ),
-                  },
-                  { title: 'Строк', dataIndex: 'cellCount', width: 70, align: 'right' },
-                  {
-                    title: 'Сумма, ₽',
-                    dataIndex: 'totalAmount',
-                    width: 150,
-                    align: 'right',
-                    render: (v: string) => <MoneyText value={v} />,
-                  },
-                  {
-                    title: 'В портале',
-                    dataIndex: 'existingDocStatus',
-                    width: 110,
-                    render: (v: string | null) =>
-                      v ? <StatusTag status={v as 'draft' | 'approved'} compact /> : <Typography.Text type="secondary">нет</Typography.Text>,
                   },
                 ]}
               />
-            </Card>
-          ) : null}
-
-          <Card size="small" title="Параметры применения">
-            <Space direction="vertical" size={8}>
-              {preview.data.kind === 'ks6' ? (
-                <Checkbox checked={importHistory} onChange={(e) => setImportHistory(e.target.checked)}>
-                  Импортировать историю выполнений (КС-2 создаются утверждёнными)
-                </Checkbox>
-              ) : null}
-              {preview.data.counts.changed > 0 ? (
-                <Checkbox checked={applyChanged} onChange={(e) => setApplyChanged(e.target.checked)}>
-                  Применить изменения договорных значений по {preview.data.counts.changed} совпавшим строкам
-                </Checkbox>
-              ) : null}
-              {user?.role === 'admin' && preview.data.ks2Columns.some((c) => c.existingDocId) ? (
-                <Checkbox checked={overwriteKs2} onChange={(e) => setOverwriteKs2(e.target.checked)}>
-                  Перезаписать строки существующих КС-2 с совпавшими номерами
-                </Checkbox>
-              ) : null}
-              {preview.data.amendmentRequired ? (
-                <Space>
-                  <Typography.Text>Новые строки добавляются по ДС:</Typography.Text>
-                  <Select
-                    style={{ width: 280 }}
-                    placeholder="Выберите доп. соглашение"
-                    status={!amendmentId ? 'error' : undefined}
-                    value={amendmentId}
-                    options={(contract.data?.amendments ?? []).map((a) => ({
-                      value: a.id,
-                      label: `ДС №${a.number}${a.dateSigned ? ` от ${dayjs(a.dateSigned).format('DD.MM.YYYY')}` : ''}`,
-                    }))}
-                    onChange={setAmendmentId}
-                  />
-                </Space>
-              ) : null}
-            </Space>
-          </Card>
+            </>
+          )}
 
           <Space>
-            <Button onClick={() => setImportId(null)}>Загрузить другой файл</Button>
+            <Button onClick={reset}>Загрузить другой файл</Button>
             <Button
               type="primary"
               disabled={!canApply}
-              loading={apply.isPending}
-              onClick={async () => {
-                try {
-                  const res = await apply.mutateAsync({
-                    importId: importId!,
-                    amendmentId,
-                    applyChanged,
-                    importHistory: preview.data!.kind === 'ks6' && importHistory,
-                    overwriteKs2,
-                    periods: periods
-                      .filter((p) => p.cellCount > 0)
-                      .map((p) => ({
-                        index: p.index,
-                        number: p.number.trim(),
-                        periodFrom: p.periodFrom,
-                        periodTo: p.periodTo,
-                      })),
-                  });
-                  setResult(res);
-                } catch (e) {
-                  message.error((e as Error).message);
-                }
-              }}
+              loading={apply.isPending || applyBatch.isPending}
+              onClick={() => void doApply()}
             >
               Применить импорт
             </Button>
           </Space>
         </Space>
       ) : null}
-      {step === 2 && !preview.data ? <Spin /> : null}
 
       {step === 3 && result ? (
         <Result
@@ -474,9 +386,13 @@ export function ImportWizardPage() {
           title="Импорт применён"
           subTitle={
             <Space direction="vertical" size={0}>
-              <span>Разделов создано: {result.sectionsCreated}, строк создано: {result.itemsCreated}, обновлено: {result.itemsUpdated}</span>
               <span>
-                КС-2 создано: {result.ks2Created}, перезаписано: {result.ks2Overwritten}, пропущено: {result.ks2Skipped}, строк выполнения: {result.linesCreated}
+                Разделов создано: {result.sectionsCreated}, строк создано: {result.itemsCreated},
+                обновлено: {result.itemsUpdated}
+              </span>
+              <span>
+                КС-2 создано: {result.ks2Created}, перезаписано: {result.ks2Overwritten}, пропущено:{' '}
+                {result.ks2Skipped}, строк выполнения: {result.linesCreated}
               </span>
             </Space>
           }
@@ -488,6 +404,53 @@ export function ImportWizardPage() {
         />
       ) : null}
     </div>
+  );
+}
+
+/** Выбор листа для второй страницы: файл уже в хранилище, грузить заново не нужно. */
+function SecondSheetPicker({
+  firstStatus,
+  loading,
+  onPick,
+  onCancel,
+}: {
+  firstStatus: ImportFileInfo | undefined;
+  loading: boolean;
+  onPick: (sheet: string) => void;
+  onCancel: () => void;
+}) {
+  const [sheet, setSheet] = useState<string | null>(null);
+  const used = firstStatus?.summary?.sheetName ?? firstStatus?.sheetName ?? null;
+  const options = (firstStatus?.summary?.sheetCandidates ?? [])
+    .filter((c) => c.name !== used)
+    .map((c) => ({
+      value: c.name,
+      label:
+        `${c.name}${c.state === 'visible' ? '' : ' (скрытый)'}` +
+        (c.periods !== null ? ` — строк ${c.rows ?? 0}, периодов ${c.periods}` : ''),
+    }));
+
+  return (
+    <Space direction="vertical" size={16} style={{ width: '100%' }}>
+      <Typography.Text>
+        Страница <b>{PART_LABEL.vat20}</b> прочитана с листа <b>{used ?? '—'}</b>. Укажите лист для
+        страницы <b>{PART_LABEL.vat22}</b>:
+      </Typography.Text>
+      <Space wrap>
+        <Select
+          style={{ minWidth: 360 }}
+          placeholder="Лист книги для НДС 22%"
+          value={sheet}
+          onChange={setSheet}
+          options={options}
+          notFoundContent="В книге нет другого подходящего листа"
+        />
+        <Button type="primary" disabled={!sheet} loading={loading} onClick={() => onPick(sheet!)}>
+          Продолжить
+        </Button>
+        <Button onClick={onCancel}>Отмена</Button>
+      </Space>
+    </Space>
   );
 }
 

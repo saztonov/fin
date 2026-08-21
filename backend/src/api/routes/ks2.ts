@@ -1,14 +1,19 @@
 import { and, eq, isNull } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { contracts, ks2Documents, ks2Lines } from '../../db/schema/index.js';
+import { contracts, estimateParts, ks2Documents, ks2Lines } from '../../db/schema/index.js';
 import { writeAudit } from '../../lib/audit.js';
 import { ApiError } from '../../lib/errors.js';
+import { assertPeriodFitsPart } from '../../lib/estimate-parts.js';
 import { sumStrings } from '../../lib/money.js';
 import * as ks2 from '../../services/ks2.service.js';
+import { ensurePart, listParts, resolvePart } from '../../services/parts.service.js';
 import { assertContractAccess, assertObjectExists } from '../plugins/auth.js';
 
 const idParam = z.object({ id: z.string().uuid() });
+
+const partCode = z.enum(['legacy', 'vat20', 'vat22']);
+const partQuery = z.object({ part: partCode.optional() });
 
 const dateStr = z
   .string()
@@ -21,6 +26,8 @@ const docSchema = z.object({
   docDate: dateStr,
   periodFrom: dateStr,
   periodTo: dateStr,
+  /** вкладка, в которой создаётся документ; без неё — часть по умолчанию */
+  part: partCode.optional(),
 });
 
 const linesSchema = z.object({
@@ -37,16 +44,19 @@ const linesSchema = z.object({
 export async function ks2Routes(app: FastifyInstance) {
   app.get('/objects/:id/ks2', { preHandler: [app.authenticate] }, async (req) => {
     const { id } = idParam.parse(req.params);
+    const { part } = partQuery.parse(req.query);
     await assertObjectExists(app.db, req.authUser, id);
     const [contract] = await app.db
       .select({ id: contracts.id })
       .from(contracts)
       .where(and(eq(contracts.objectId, id), isNull(contracts.deletedAt)));
     if (!contract) return [];
+    const active = resolvePart(await listParts(app.db, contract.id), part);
+    if (!active) return [];
     return app.db
       .select()
       .from(ks2Documents)
-      .where(and(eq(ks2Documents.contractId, contract.id), isNull(ks2Documents.deletedAt)));
+      .where(and(eq(ks2Documents.partId, active.id), isNull(ks2Documents.deletedAt)));
   });
 
   app.post('/objects/:id/ks2', { preHandler: [app.authenticate] }, async (req, reply) => {
@@ -58,11 +68,19 @@ export async function ks2Routes(app: FastifyInstance) {
       .from(contracts)
       .where(and(eq(contracts.objectId, id), isNull(contracts.deletedAt)));
     if (!contract) throw ApiError.badRequest('Сначала заведите договор по объекту', 'no_contract');
-    await ks2.assertUniqueNumber(app.db, contract.id, input.number);
+    // документ создаётся в активной вкладке; если смета ещё не заводилась —
+    // заводим legacy-часть, чтобы ручной ввод работал и без импорта
+    const parts = await listParts(app.db, contract.id);
+    const part = parts.length === 0
+      ? await ensurePart(app.db, contract.id, 'legacy')
+      : resolvePart(parts, input.part)!;
+    assertPeriodFitsPart(part.code, input.periodFrom, input.periodTo);
+    await ks2.assertUniqueNumber(app.db, contract.id, part.id, input.number);
     const [created] = await app.db
       .insert(ks2Documents)
       .values({
         contractId: contract.id,
+        partId: part.id,
         number: input.number,
         docDate: input.docDate ?? null,
         periodFrom: input.periodFrom ?? null,
@@ -96,10 +114,24 @@ export async function ks2Routes(app: FastifyInstance) {
       throw ApiError.conflict('КС-2 утверждён — редактирование запрещено', 'ks2_approved');
     }
     const input = docSchema.partial().parse(req.body);
-    if (input.number) await ks2.assertUniqueNumber(app.db, doc.contractId, input.number, id);
+    // границы периода проверяются и здесь: документ, законно созданный в своей
+    // части, иначе переезжал бы за границу ставки следующим редактированием
+    const [part] = await app.db
+      .select({ code: estimateParts.code })
+      .from(estimateParts)
+      .where(eq(estimateParts.id, doc.partId));
+    assertPeriodFitsPart(
+      part?.code ?? 'legacy',
+      input.periodFrom === undefined ? doc.periodFrom : input.periodFrom,
+      input.periodTo === undefined ? doc.periodTo : input.periodTo,
+    );
+    if (input.number) {
+      await ks2.assertUniqueNumber(app.db, doc.contractId, doc.partId, input.number, id);
+    }
+    const { part: _part, ...patch } = input;
     const [updated] = await app.db
       .update(ks2Documents)
-      .set({ ...input, updatedAt: new Date() })
+      .set({ ...patch, updatedAt: new Date() })
       .where(eq(ks2Documents.id, id))
       .returning();
     return updated;

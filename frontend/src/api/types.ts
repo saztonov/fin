@@ -15,6 +15,20 @@ export interface ConstructionObject {
   address: string;
 }
 
+/** Объект с цифрами договора — для карточек стартового экрана КС. */
+export interface ObjectSummary extends ConstructionObject {
+  hasContract: boolean;
+  contractNumber: string | null;
+  contractTotal: string;
+  executedAmount: string;
+  remainderAmount: string;
+  ks2Count: number;
+  /** подпись версии сметы, если она разделена по ставкам НДС; иначе null */
+  partTitle: string | null;
+  catalogAmount: string;
+  catalogMismatch: boolean;
+}
+
 export interface Contract {
   id: string;
   objectId: string;
@@ -25,6 +39,8 @@ export interface Contract {
   customerName: string;
   contractorName: string;
   subject: string;
+  /** gross — цены в договоре с НДС, net — договор без НДС */
+  vatMode: 'gross' | 'net';
 }
 
 export interface Amendment {
@@ -112,9 +128,27 @@ export interface GridSectionRow {
 
 export type GridRow = GridSectionRow | GridItemRow;
 
+/** Код части сметы: единая смета или версия под свою ставку НДС. */
+export type PartCode = 'legacy' | 'vat20' | 'vat22';
+
+export interface PartInfo {
+  id: string;
+  code: PartCode;
+  /** подпись вкладки: «НДС 20%» / «НДС 22%» */
+  title: string;
+  /** ставка части; null у legacy — там ставка по дате */
+  vatRate: number | null;
+  fileContractTotal: string | null;
+  fileExecutedTotal: string | null;
+  fileTotalsImportId: string | null;
+}
+
 export interface Ks6Grid {
   contract: Contract | null;
   amendments: Amendment[];
+  /** одна legacy — вкладки не показываются; vat20 + vat22 — показываются */
+  availableParts: PartInfo[];
+  activePart: PartInfo | null;
   periods: PeriodInfo[];
   rows: GridRow[];
   totals: {
@@ -236,6 +270,8 @@ export interface Ks2ColumnDiff {
 
 export interface ImportPreview {
   importFileId: string;
+  /** часть сметы, в которую применится файл */
+  partCode: PartCode;
   kind: 'psdc' | 'ks6';
   header: {
     contractNumber: string | null;

@@ -54,16 +54,8 @@ export const contracts = pgTable(
     subject: text('subject').notNull().default(''),
     /** gross — цены в договоре с НДС, net — договор без НДС */
     vatMode: text('vat_mode', { enum: ['gross', 'net'] }).notNull().default('gross'),
-    /**
-     * Контрольные суммы последнего применённого файла импорта: «Итого» по договору и
-     * колонка выполнения с начала строительства. Данными не являются — по ним грид
-     * КС-6 подсвечивает расхождение портала с исходной книгой.
-     */
-    fileContractTotal: numeric('file_contract_total', { precision: 18, scale: 2 }),
-    fileExecutedTotal: numeric('file_executed_total', { precision: 18, scale: 2 }),
-    // без .references(): FK задан миграцией 0007, а ссылка на importFiles замкнула бы
-    // импорт catalog ↔ imports в цикл
-    fileTotalsImportId: uuid('file_totals_import_id'),
+    // контрольные суммы книги переехали на estimate_parts (миграция 0008): у частей
+    // 20 % и 22 % свои листы, а значит и свои «Итого»
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
     deletedAt: timestamp('deleted_at', { withTimezone: true }),

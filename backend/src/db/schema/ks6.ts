@@ -5,10 +5,12 @@ import {
   pgTable,
   text,
   timestamp,
+  unique,
   uuid,
   type AnyPgColumn,
 } from 'drizzle-orm/pg-core';
 import { amendments, contracts } from './catalog.js';
+import { estimateParts } from './parts.js';
 
 export const ks6Sections = pgTable(
   'ks6_sections',
@@ -17,6 +19,10 @@ export const ks6Sections = pgTable(
     contractId: uuid('contract_id')
       .notNull()
       .references(() => contracts.id),
+    /** часть сметы: legacy — единая смета, vat20/vat22 — версии по ставкам */
+    partId: uuid('part_id')
+      .notNull()
+      .references(() => estimateParts.id),
     parentId: uuid('parent_id').references((): AnyPgColumn => ks6Sections.id),
     name: text('name').notNull(),
     sortOrder: integer('sort_order').notNull(),
@@ -25,7 +31,10 @@ export const ks6Sections = pgTable(
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
     deletedAt: timestamp('deleted_at', { withTimezone: true }),
   },
-  (t) => [index('ks6_sections_contract_idx').on(t.contractId, t.sortOrder)],
+  (t) => [
+    index('ks6_sections_contract_idx').on(t.contractId, t.sortOrder),
+    index('ks6_sections_part_idx').on(t.partId),
+  ],
 );
 
 export const workItems = pgTable(
@@ -35,6 +44,9 @@ export const workItems = pgTable(
     contractId: uuid('contract_id')
       .notNull()
       .references(() => contracts.id),
+    partId: uuid('part_id')
+      .notNull()
+      .references(() => estimateParts.id),
     sectionId: uuid('section_id')
       .notNull()
       .references(() => ks6Sections.id),
@@ -66,6 +78,10 @@ export const workItems = pgTable(
     index('work_items_contract_idx').on(t.contractId, t.sortOrder),
     index('work_items_section_idx').on(t.sectionId),
     index('work_items_kvr_idx').on(t.kvrItemId),
+    index('work_items_part_idx').on(t.partId),
+    // цель составного FK из ks2_lines: строка выполнения обязана ссылаться
+    // на работу своей части
+    unique('work_items_id_part_uq').on(t.id, t.partId),
   ],
 );
 
