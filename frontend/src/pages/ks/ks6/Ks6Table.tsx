@@ -1,15 +1,18 @@
 import { Table } from 'antd';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { Ks6Grid } from '../../../api/types';
+import type { Ks6Grid, PeriodInfo, VatView } from '../../../api/types';
 import type { EditsStore } from './editsStore';
 import { useKs6Columns } from './useKs6Columns';
 import { useKs6Rows, type Ks6TableRow } from './useKs6Rows';
 
 interface Props {
   grid: Ks6Grid;
+  /** КС-2, чьи колонки показываем (после фильтра по периоду) */
+  periods: PeriodInfo[];
   selectedDraftId: string | null;
   editable: boolean;
   store: EditsStore;
+  vatView: VatView;
 }
 
 function rowClassName(row: Ks6TableRow): string {
@@ -19,7 +22,7 @@ function rowClassName(row: Ks6TableRow): string {
   return '';
 }
 
-export function Ks6Table({ grid, selectedDraftId, editable, store }: Props) {
+export function Ks6Table({ grid, periods, selectedDraftId, editable, store, vatView }: Props) {
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const rows = useKs6Rows(grid, collapsed);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -47,11 +50,12 @@ export function Ks6Table({ grid, selectedDraftId, editable, store }: Props) {
   }, [rows]);
 
   const { columns, totalWidth } = useKs6Columns({
-    periods: grid.periods,
+    periods,
     selectedDraftId,
     editable,
     store,
     editIndexByItem,
+    vatView,
     onToggleSection: (id) =>
       setCollapsed((prev) => {
         const next = new Set(prev);

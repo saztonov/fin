@@ -159,4 +159,21 @@ export async function ks2Routes(app: FastifyInstance) {
     });
     return { message: 'КС-2 удалён' };
   });
+
+  /** Очистка всей истории КС-2 по объекту — под перезаливку исправленного Excel. */
+  app.delete(
+    '/objects/:id/ks2',
+    { preHandler: [app.authenticate, app.requireRole('admin')] },
+    async (req) => {
+      const { id } = idParam.parse(req.params);
+      await assertObjectExists(app.db, req.authUser, id);
+      const [contract] = await app.db
+        .select({ id: contracts.id })
+        .from(contracts)
+        .where(and(eq(contracts.objectId, id), isNull(contracts.deletedAt)));
+      if (!contract) throw ApiError.badRequest('По объекту нет договора', 'no_contract');
+      const res = await ks2.clearByContract(app.db, contract.id, req.authUser.id);
+      return { message: `Удалено КС-2: ${res.documents}, строк выполнения: ${res.lines}`, ...res };
+    },
+  );
 }

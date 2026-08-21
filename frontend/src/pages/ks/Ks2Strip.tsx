@@ -1,46 +1,103 @@
 import {
   CheckOutlined,
+  ClearOutlined,
   DeleteOutlined,
   DownloadOutlined,
   PlusOutlined,
   RollbackOutlined,
   UploadOutlined,
 } from '@ant-design/icons';
-import { Button, DatePicker, Form, Input, Modal, Popconfirm, Space, Tooltip } from 'antd';
+import {
+  Button,
+  DatePicker,
+  Form,
+  Input,
+  Modal,
+  Popconfirm,
+  Segmented,
+  Select,
+  Space,
+  Tooltip,
+  Typography,
+} from 'antd';
 import dayjs, { type Dayjs } from 'dayjs';
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { downloadFile } from '../../api/client';
-import type { Ks6Grid, PeriodInfo, Role } from '../../api/types';
-import { useCreateKs2, useKs2Action } from '../../api/hooks';
+import type { Ks6Grid, PeriodInfo, Role, VatView } from '../../api/types';
+import { useClearKs2, useCreateKs2, useKs2Action } from '../../api/hooks';
 import { fmtDate, fmtMoney, fmtMonth } from '../../shared/lib/formatters';
 import { useFeedback } from '../../shared/lib/useFeedback';
 import { StatusTag } from '../../shared/ui/StatusTag';
 
 interface Props {
   objectId: string;
+  objectCode: string;
   grid: Ks6Grid;
   selectedKs2: string | null;
   onSelect: (id: string | null) => void;
   role: Role;
   hasUnsaved: boolean;
+  /** сколько КС-2 сейчас показано в таблице (после фильтра по периоду) */
+  visibleCount: number;
+  range: [string | null, string | null];
+  onRangeChange: (from: string | null, to: string | null) => void;
+  vatView: VatView;
+  onVatViewChange: (v: VatView) => void;
 }
 
-function chipLabel(p: PeriodInfo): string {
+/**
+ * Сумма выбранного КС-2 в трёх видах. НДС выделяется по ставке на дату периода
+ * (20 % до 31.12.2025, 22 % с 01.01.2026), поэтому у каждого документа она своя.
+ */
+function Ks2Amounts({ p, vatMode }: { p: PeriodInfo; vatMode: 'gross' | 'net' }) {
+  if (vatMode === 'net') {
+    return (
+      <Typography.Text type="secondary">
+        КС-2 №{p.number}: <b className="num">{fmtMoney(p.totalAmount)} ₽</b> · НДС не облагается
+      </Typography.Text>
+    );
+  }
+  return (
+    <Typography.Text type="secondary">
+      КС-2 №{p.number}: <b className="num">{fmtMoney(p.totalAmount)} ₽</b> с НДС · НДС {p.vatRate}%{' '}
+      — <span className="num">{fmtMoney(p.vatAmount)} ₽</span> ·{' '}
+      <span className="num">{fmtMoney(p.netAmount)} ₽</span> без НДС
+    </Typography.Text>
+  );
+}
+
+function ks2Label(p: PeriodInfo): string {
   if (p.periodFrom) return `КС-2 №${p.number} · ${fmtMonth(p.periodFrom)}`;
   return `КС-2 №${p.number}`;
 }
 
-export function Ks2Strip({ objectId, grid, selectedKs2, onSelect, role, hasUnsaved }: Props) {
+/** Панель управления КС-2: выбор документа для ввода, действия над ним и фильтр периода. */
+export function Ks2Strip({
+  objectId,
+  objectCode,
+  grid,
+  selectedKs2,
+  onSelect,
+  role,
+  hasUnsaved,
+  visibleCount,
+  range,
+  onRangeChange,
+  vatView,
+  onVatViewChange,
+}: Props) {
   const { message, modal } = useFeedback();
   const navigate = useNavigate();
   const createKs2 = useCreateKs2(objectId);
   const ks2Action = useKs2Action(objectId);
+  const clearKs2 = useClearKs2(objectId);
   const [createOpen, setCreateOpen] = useState(false);
   const [form] = Form.useForm();
 
   const canManage = role === 'admin' || role === 'manager';
   const selected = grid.periods.find((p) => p.id === selectedKs2) ?? null;
+  const filtered = Boolean(range[0] || range[1]);
 
   const approve = (p: PeriodInfo) => {
     modal.confirm({
@@ -56,97 +113,213 @@ export function Ks2Strip({ objectId, grid, selectedKs2, onSelect, role, hasUnsav
     });
   };
 
+  const clearAll = () => {
+    const approved = grid.periods.filter((p) => p.status === 'approved').length;
+    let typed = '';
+    modal.confirm({
+      title: `Удалить все КС-2 по объекту ${objectCode}?`,
+      width: 520,
+      content: (
+        <div>
+          <p style={{ marginTop: 0 }}>
+            Будет удалено документов: <b>{grid.periods.length}</b> (в т.ч. утверждённых:{' '}
+            {approved}). Строки выполнения удаляются безвозвратно. Смета и договор сохранятся —
+            после очистки историю можно загрузить заново из Excel.
+          </p>
+          <p style={{ marginBottom: 4 }}>
+            Для подтверждения введите код объекта <b>{objectCode}</b>:
+          </p>
+          <Input
+            placeholder={objectCode}
+            autoFocus
+            onChange={(e) => {
+              typed = e.target.value;
+            }}
+          />
+        </div>
+      ),
+      okText: 'Очистить',
+      okButtonProps: { danger: true },
+      cancelText: 'Отмена',
+      autoFocusButton: 'cancel',
+      onOk: async () => {
+        if (typed.trim().toLowerCase() !== objectCode.trim().toLowerCase()) {
+          message.error('Код объекта введён неверно');
+          return Promise.reject();
+        }
+        const res = await clearKs2.mutateAsync();
+        onSelect(null);
+        message.success(res.message);
+      },
+    });
+  };
+
   return (
-    <Space wrap size={8} style={{ width: '100%' }}>
-      <Space wrap size={4} style={{ flex: 1 }}>
-        {grid.periods.map((p) => (
-          <Button
-            key={p.id}
-            size="small"
-            type={p.id === selectedKs2 ? 'primary' : 'default'}
-            ghost={p.id === selectedKs2}
-            onClick={() => onSelect(p.id === selectedKs2 ? null : p.id)}
-          >
+    <Space direction="vertical" size={8} style={{ width: '100%' }}>
+      <Space wrap size={8} style={{ width: '100%' }}>
+        <Select
+          showSearch
+          allowClear
+          size="small"
+          style={{ width: 300 }}
+          placeholder={grid.periods.length > 0 ? 'КС-2 для ввода объёмов' : 'КС-2 ещё нет'}
+          disabled={grid.periods.length === 0}
+          optionFilterProp="label"
+          value={selectedKs2}
+          onChange={(v) => onSelect(v ?? null)}
+          options={grid.periods.map((p) => ({
+            value: p.id,
+            label: ks2Label(p),
+            status: p.status,
+          }))}
+          optionRender={(option) => (
             <Space size={6}>
-              {chipLabel(p)}
-              <StatusTag status={p.status} compact />
+              {option.label}
+              <StatusTag status={option.data.status} compact />
             </Space>
-          </Button>
-        ))}
-        {grid.periods.length === 0 ? <span style={{ color: '#8B94A3' }}>КС-2 ещё нет</span> : null}
-      </Space>
-      <Space size={8}>
-        {selected && selected.status === 'draft' && canManage ? (
-          <Tooltip title={hasUnsaved ? 'Сначала сохраните изменения' : undefined}>
+          )}
+        />
+        <Space wrap size={8}>
+          {selected && selected.status === 'draft' && canManage ? (
+            <Tooltip title={hasUnsaved ? 'Сначала сохраните изменения' : undefined}>
+              <Button
+                size="small"
+                icon={<CheckOutlined />}
+                disabled={hasUnsaved}
+                onClick={() => approve(selected)}
+              >
+                Утвердить
+              </Button>
+            </Tooltip>
+          ) : null}
+          {selected && selected.status === 'approved' && canManage ? (
+            <Popconfirm
+              title={`Вернуть КС-2 №${selected.number} в черновик?`}
+              okText="Вернуть"
+              cancelText="Отмена"
+              onConfirm={async () => {
+                await ks2Action.mutateAsync({ id: selected.id, action: 'return' });
+                message.success('Документ возвращён в черновик');
+              }}
+            >
+              <Button size="small" icon={<RollbackOutlined />}>
+                Вернуть
+              </Button>
+            </Popconfirm>
+          ) : null}
+          {selected && selected.status === 'draft' ? (
+            <Popconfirm
+              title={`Удалить черновик КС-2 №${selected.number}?`}
+              okText="Удалить"
+              okButtonProps={{ danger: true }}
+              cancelText="Отмена"
+              onConfirm={async () => {
+                await ks2Action.mutateAsync({ id: selected.id, action: 'delete' });
+                onSelect(null);
+                message.success('Черновик удалён');
+              }}
+            >
+              <Button size="small" danger icon={<DeleteOutlined />} />
+            </Popconfirm>
+          ) : null}
+          {selected ? (
             <Button
               size="small"
-              icon={<CheckOutlined />}
-              disabled={hasUnsaved}
-              onClick={() => approve(selected)}
+              icon={<DownloadOutlined />}
+              onClick={() => void downloadFile(`/ks2/${selected.id}/export.xlsx`)}
             >
-              Утвердить
+              КС-2
             </Button>
-          </Tooltip>
-        ) : null}
-        {selected && selected.status === 'approved' && canManage ? (
-          <Popconfirm
-            title={`Вернуть КС-2 №${selected.number} в черновик?`}
-            okText="Вернуть"
-            cancelText="Отмена"
-            onConfirm={async () => {
-              await ks2Action.mutateAsync({ id: selected.id, action: 'return' });
-              message.success('Документ возвращён в черновик');
-            }}
-          >
-            <Button size="small" icon={<RollbackOutlined />}>
-              Вернуть
-            </Button>
-          </Popconfirm>
-        ) : null}
-        {selected && selected.status === 'draft' ? (
-          <Popconfirm
-            title={`Удалить черновик КС-2 №${selected.number}?`}
-            okText="Удалить"
-            okButtonProps={{ danger: true }}
-            cancelText="Отмена"
-            onConfirm={async () => {
-              await ks2Action.mutateAsync({ id: selected.id, action: 'delete' });
-              onSelect(null);
-              message.success('Черновик удалён');
-            }}
-          >
-            <Button size="small" danger icon={<DeleteOutlined />} />
-          </Popconfirm>
-        ) : null}
-        {selected ? (
+          ) : null}
+          <Button size="small" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>
+            Новый КС-2
+          </Button>
           <Button
             size="small"
             icon={<DownloadOutlined />}
-            onClick={() => void downloadFile(`/ks2/${selected.id}/export.xlsx`)}
+            onClick={() => void downloadFile(`/objects/${objectId}/export/ks6.xlsx`)}
           >
-            КС-2
+            Экспорт КС-6
           </Button>
-        ) : null}
-        <Button size="small" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>
-          Новый КС-2
-        </Button>
-        <Button
-          size="small"
-          icon={<DownloadOutlined />}
-          onClick={() => void downloadFile(`/objects/${objectId}/export/ks6.xlsx`)}
-        >
-          Экспорт КС-6
-        </Button>
-        {canManage ? (
-          <Button
-            size="small"
-            icon={<UploadOutlined />}
-            onClick={() => navigate(`/ks/import?object=${objectId}`)}
-          >
-            Импорт
-          </Button>
-        ) : null}
+          {canManage ? (
+            <Button
+              size="small"
+              icon={<UploadOutlined />}
+              onClick={() => navigate(`/ks/import?object=${objectId}`)}
+            >
+              Импорт
+            </Button>
+          ) : null}
+          {role === 'admin' && grid.periods.length > 0 ? (
+            <Tooltip title="Удалить всю историю КС-2 по объекту — под повторную загрузку из Excel">
+              <Button
+                size="small"
+                danger
+                icon={<ClearOutlined />}
+                loading={clearKs2.isPending}
+                onClick={clearAll}
+              >
+                Очистить КС-2
+              </Button>
+            </Tooltip>
+          ) : null}
+        </Space>
       </Space>
+
+      <Space wrap size={8}>
+        <Typography.Text type="secondary">Период:</Typography.Text>
+        <DatePicker.RangePicker
+          picker="month"
+          size="small"
+          format="MMM YYYY"
+          allowClear
+          allowEmpty={[true, true]}
+          placeholder={['с месяца', 'по месяц']}
+          value={[
+            range[0] ? dayjs(range[0], 'YYYY-MM') : null,
+            range[1] ? dayjs(range[1], 'YYYY-MM') : null,
+          ]}
+          onChange={(vals) =>
+            onRangeChange(vals?.[0]?.format('YYYY-MM') ?? null, vals?.[1]?.format('YYYY-MM') ?? null)
+          }
+          presets={[
+            { label: 'Текущий год', value: [dayjs().startOf('year'), dayjs().endOf('year')] },
+            {
+              label: 'Прошлый год',
+              value: [
+                dayjs().subtract(1, 'year').startOf('year'),
+                dayjs().subtract(1, 'year').endOf('year'),
+              ],
+            },
+            { label: 'Последние 12 месяцев', value: [dayjs().subtract(11, 'month'), dayjs()] },
+          ]}
+        />
+        {filtered ? (
+          <Typography.Text type="secondary">
+            Показано КС-2: {visibleCount} из {grid.periods.length}
+          </Typography.Text>
+        ) : null}
+        <Tooltip
+          title={
+            grid.totals.vatMode === 'net'
+              ? 'Договор ведётся без НДС — выделять нечего'
+              : 'Пересчитывает все суммы таблицы по ставке на дату периода'
+          }
+        >
+          <Segmented
+            size="small"
+            value={vatView}
+            disabled={grid.totals.vatMode === 'net'}
+            onChange={(v) => onVatViewChange(v as VatView)}
+            options={[
+              { value: 'gross', label: 'с НДС' },
+              { value: 'net', label: 'без НДС' },
+            ]}
+          />
+        </Tooltip>
+      </Space>
+
+      {selected ? <Ks2Amounts p={selected} vatMode={grid.totals.vatMode} /> : null}
 
       <Modal
         title="Новый КС-2"

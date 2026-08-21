@@ -9,6 +9,7 @@ import { sanitizeCellText } from './sanitize.js';
 
 const MONEY_FMT = '#,##0.00';
 const QTY_FMT = '#,##0.###';
+const PRICE_FMT = '#,##0.00####';
 const thin = { style: 'thin' as const, color: { argb: 'FFB0B0B0' } };
 const BORDER = { top: thin, left: thin, bottom: thin, right: thin };
 
@@ -79,7 +80,8 @@ export async function exportKs2(db: Db, ks2Id: string): Promise<{ buffer: Buffer
     ws.getColumn(c).width = width;
   }
   ws.getColumn(5).numFmt = QTY_FMT;
-  ws.getColumn(6).numFmt = MONEY_FMT;
+  // цена за единицу хранится с 6 знаками — печатаем как есть
+  ws.getColumn(6).numFmt = PRICE_FMT;
   ws.getColumn(7).numFmt = MONEY_FMT;
 
   let rowNum = headerRow + 1;

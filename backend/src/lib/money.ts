@@ -30,6 +30,14 @@ export function roundQty(v: Num): string {
   return dec(v).toDecimalPlaces(6, Decimal.ROUND_HALF_UP).toFixed(6);
 }
 
+/**
+ * Цена за единицу до 6 знаков (как numeric(18,6)). В ведомостях заказчиков расценка
+ * почти всегда с 4–6 знаками; урезание до копеек ломало бы qty × price при ручном вводе.
+ */
+export function round6(v: Num): string {
+  return dec(v).toDecimalPlaces(6, Decimal.ROUND_HALF_UP).toFixed(6);
+}
+
 /** Стоимость строки: объём × цена за единицу, до копеек. */
 export function lineAmount(qty: Num, unitPrice: Num): string {
   return round2(dec(qty).mul(dec(unitPrice)));
@@ -78,6 +86,24 @@ export function vatRateOn(isoDate?: string | null): number {
 export function vatFromGross(amount: Num, onDate?: string | null): string {
   const rate = vatRateOn(onDate);
   return round2(dec(amount).mul(rate).div(100 + rate));
+}
+
+/**
+ * Сумма без НДС = сумма с НДС − выделенный НДС. Именно вычитанием, а не
+ * `amount × 100 / (100 + rate)`: так «без НДС» + «НДС» всегда дают исходную сумму
+ * до копейки, и итог таблицы сходится со строками при любом округлении.
+ */
+export function netFromGross(amount: Num, onDate?: string | null): string {
+  return sub(amount, vatFromGross(amount, onDate));
+}
+
+/**
+ * Цена за единицу без НДС: здесь делением, а не вычитанием round2-НДС, — цена
+ * хранится с 6 знаками, и копеечное округление промежуточного НДС испортило бы её.
+ */
+export function netPriceFromGross(price: Num, onDate?: string | null): string {
+  const rate = vatRateOn(onDate);
+  return round6(dec(price).mul(100).div(100 + rate));
 }
 
 export function isZero(v: Num | null | undefined): boolean {

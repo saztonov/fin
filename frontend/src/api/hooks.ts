@@ -15,6 +15,7 @@ import type {
   ImportPreview,
   Ks2Document,
   Ks6Grid,
+  VatView,
 } from './types';
 
 // ---------- объекты ----------
@@ -103,10 +104,15 @@ export function useDeleteAmendment(objectId: string | null) {
 
 // ---------- КС-6 ----------
 
-export function useKs6Grid(objectId: string | null) {
+/**
+ * Грид КС-6. Режим НДС входит в ключ запроса, поэтому переключение «с НДС / без НДС»
+ * берётся из кеша, а не пересчитывается сервером заново. Инвалидация по префиксу
+ * `['ks6', objectId]` гасит оба режима сразу.
+ */
+export function useKs6Grid(objectId: string | null, vatView: VatView = 'gross') {
   return useQuery({
-    queryKey: ['ks6', objectId],
-    queryFn: () => api<Ks6Grid>(`/objects/${objectId}/ks6`),
+    queryKey: ['ks6', objectId, vatView],
+    queryFn: () => api<Ks6Grid>(`/objects/${objectId}/ks6?vat=${vatView}`),
     enabled: Boolean(objectId),
     placeholderData: keepPreviousData,
   });
@@ -134,6 +140,18 @@ export function useKs2Action(objectId: string | null) {
       action === 'delete'
         ? api(`/ks2/${id}`, { method: 'DELETE' })
         : api(`/ks2/${id}/${action}`, { method: 'POST' }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['ks6', objectId] }),
+  });
+}
+
+/** Удаление всей истории КС-2 по объекту (только admin) — под перезаливку из Excel. */
+export function useClearKs2(objectId: string | null) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () =>
+      api<{ message: string; documents: number; lines: number }>(`/objects/${objectId}/ks2`, {
+        method: 'DELETE',
+      }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['ks6', objectId] }),
   });
 }

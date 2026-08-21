@@ -1,10 +1,11 @@
 import { CaretDownOutlined, CaretRightOutlined } from '@ant-design/icons';
 import { Tooltip } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
-import { useMemo } from 'react';
-import type { PeriodInfo } from '../../../api/types';
-import { fmtDate, fmtMonth, qtyPrecision } from '../../../shared/lib/formatters';
+import { useMemo, type ReactNode } from 'react';
+import type { PeriodInfo, VatView } from '../../../api/types';
+import { fmtDate, fmtMoney, fmtMonth, qtyPrecision } from '../../../shared/lib/formatters';
 import { MoneyText } from '../../../shared/ui/MoneyText';
+import { PriceText } from '../../../shared/ui/PriceText';
 import { QtyText } from '../../../shared/ui/QtyText';
 import { StatusTag } from '../../../shared/ui/StatusTag';
 import { EditableQtyCell, EditedAmountText } from './EditableQtyCell';
@@ -18,6 +19,48 @@ interface Options {
   store: EditsStore;
   onToggleSection: (id: string) => void;
   editIndexByItem: Map<string, number>;
+  /** в режиме «без НДС» подсказки о расхождениях называют суммы с НДС — как в файле */
+  vatView: VatView;
+}
+
+/**
+ * Ячейка с расхождением: красная обводка + подсказка, на сколько портал разошёлся
+ * с исходным Excel. Источник истины — строки портала; книга служит сверкой.
+ */
+function mismatchCell(
+  base: string,
+  diff: string | null | undefined,
+): { className: string } {
+  return { className: diff ? `${base} ks6-cell--mismatch` : base };
+}
+
+function MismatchTip({
+  diff,
+  children,
+  title,
+  fileValue,
+  fileName,
+  grossNote,
+}: {
+  diff: string | null | undefined;
+  children: ReactNode;
+  title: string;
+  fileValue?: string | null;
+  fileName?: string | null;
+  grossNote: boolean;
+}) {
+  if (!diff) return <>{children}</>;
+  const lines = [
+    title,
+    fileValue ? `В файле${fileName ? ` «${fileName}»` : ''}: ${fmtMoney(fileValue)} ₽` : null,
+    `Расхождение: ${fmtMoney(diff)} ₽`,
+    grossNote ? 'Суммы сверки — с НДС, как в книге' : null,
+  ].filter(Boolean);
+  return (
+    <Tooltip title={<span style={{ whiteSpace: 'pre-line' }}>{lines.join('\n')}</span>}>
+      <span>{children}</span>
+    </Tooltip>
+  );
 }
 
 /** true → ячейку нужно перерисовать (строки иммутабельны, сравнение по ссылке). */
@@ -32,8 +75,10 @@ export function useKs6Columns({
   store,
   onToggleSection,
   editIndexByItem,
+  vatView,
 }: Options): { columns: ColumnsType<Ks6TableRow>; totalWidth: number } {
   return useMemo(() => {
+    const grossNote = vatView === 'net';
     const nameColumn = {
       title: 'Наименование работ',
       key: 'name',
@@ -133,11 +178,11 @@ export function useKs6Columns({
           {
             title: 'Цена за ед.',
             key: 'unitPrice',
-            width: 110,
+            width: 120,
             align: 'right',
             className: 'ks6-cell-num',
             shouldCellUpdate: cellChanged,
-            render: (_, row) => (row.rowType === 'nom' ? <MoneyText value={row.unitPrice} /> : null),
+            render: (_, row) => (row.rowType === 'nom' ? <PriceText value={row.unitPrice} /> : null),
           },
           {
             title: 'Всего',
@@ -146,12 +191,25 @@ export function useKs6Columns({
             align: 'right',
             className: 'ks6-cell-num',
             shouldCellUpdate: cellChanged,
+            onCell: (row) => mismatchCell('ks6-cell-num', row.totalMismatch),
             render: (_, row) => (
-              <MoneyText
-                value={row.contractTotal}
-                strong={row.rowType === 'section' || row.rowType === 'grandTotal'}
-                keepZero={row.rowType === 'grandTotal'}
-              />
+              <MismatchTip
+                diff={row.totalMismatch}
+                title={
+                  row.rowType === 'grandTotal'
+                    ? 'Σ номенклатур не сходится с «Итого» книги'
+                    : 'Всего не сходится с «Кол-во × Цена за ед.»'
+                }
+                fileValue={row.rowType === 'grandTotal' ? row.fileContractTotal : null}
+                fileName={row.rowType === 'grandTotal' ? row.fileTotalsName : null}
+                grossNote={grossNote}
+              >
+                <MoneyText
+                  value={row.contractTotal}
+                  strong={row.rowType === 'section' || row.rowType === 'grandTotal'}
+                  keepZero={row.rowType === 'grandTotal'}
+                />
+              </MismatchTip>
             ),
           },
         ],
@@ -217,7 +275,8 @@ export function useKs6Columns({
                     store={store}
                     itemId={row.itemId!}
                     savedAmount={saved ?? '0'}
-                    unitPrice={row.unitPrice ?? '0'}
+                    unitPriceGross={row.unitPriceGross ?? '0'}
+                    vatRate={vatView === 'net' ? p.vatRate : 0}
                     render={(amount) => <MoneyText value={amount} />}
                   />
                 );
@@ -260,12 +319,21 @@ export function useKs6Columns({
         align: 'right',
         className: 'ks6-cell-num',
         shouldCellUpdate: cellChanged,
+        onCell: (row) => mismatchCell('ks6-cell-num', row.executedMismatch),
         render: (_, row) => (
-          <MoneyText
-            value={row.executedAmount}
-            strong={row.rowType === 'section' || row.rowType === 'grandTotal'}
-            keepZero={row.rowType === 'grandTotal'}
-          />
+          <MismatchTip
+            diff={row.executedMismatch}
+            title="Выполнение по импортированным КС-2 не сходится с контрольной графой книги"
+            fileValue={row.fileExecutedTotal}
+            fileName={row.rowType === 'grandTotal' ? row.fileTotalsName : null}
+            grossNote={grossNote}
+          >
+            <MoneyText
+              value={row.executedAmount}
+              strong={row.rowType === 'section' || row.rowType === 'grandTotal'}
+              keepZero={row.rowType === 'grandTotal'}
+            />
+          </MismatchTip>
         ),
       },
     ];
@@ -273,8 +341,8 @@ export function useKs6Columns({
     const columns: ColumnsType<Ks6TableRow> = [...left, ...contractGroup, ...periodGroups, ...right];
 
     const totalWidth =
-      48 + 96 + 340 + 64 + 90 + 110 + 130 + periods.reduce((acc, p) => acc + (editable && p.id === selectedDraftId ? 235 : 215), 0) + 135 + 145;
+      48 + 96 + 340 + 64 + 90 + 120 + 130 + periods.reduce((acc, p) => acc + (editable && p.id === selectedDraftId ? 235 : 215), 0) + 135 + 145;
 
     return { columns, totalWidth };
-  }, [periods, selectedDraftId, editable, store, onToggleSection, editIndexByItem]);
+  }, [periods, selectedDraftId, editable, store, onToggleSection, editIndexByItem, vatView]);
 }

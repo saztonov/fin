@@ -19,7 +19,7 @@ import {
   type PeriodMeta,
 } from './header-dictionary.js';
 import type { HeaderLayout } from './header-detect.js';
-import { cellDate, cellText } from './sheet-utils.js';
+import { cellDate, cellNum, cellText } from './sheet-utils.js';
 import type { SheetGrid } from './xlsx-reader.js';
 
 export interface PeriodGroup {
@@ -44,6 +44,8 @@ export interface PeriodGroups {
 }
 
 const MAX_SCAN_COL = 600;
+/** Сколько строк данных проверяем, решая, есть ли в графе хоть что-нибудь. */
+const DATA_PROBE_ROWS = 500;
 
 type SubField = 'qty' | 'total' | 'unitPrice' | 'percent';
 
@@ -82,6 +84,19 @@ function isStrongLabel(label: string): boolean {
   return label !== '' && (isPeriodLabel(label) || classifyGroup(label) !== 'unknown');
 }
 
+/**
+ * Число подписью группы быть не может. Над таблицей нередко висит титульная строка
+ * с суммами и черновые расчёты автора файла (ЗИЛ: «286954351,248» в графе 142) —
+ * подписью акта их считать нельзя. Номер акта («12») числом тоже выглядит, поэтому
+ * отбрасываются только заведомо не-номера: дробные, отрицательные и ≥ 1000.
+ */
+function isStrayNumber(text: string): boolean {
+  const s = text.replace(/[\s ]/g, '').replace(',', '.');
+  if (!/^-?\d+(\.\d+)?$/.test(s)) return false;
+  const n = Number(s);
+  return !Number.isInteger(n) || n < 0 || n >= 1000;
+}
+
 function labelOf(
   ws: SheetGrid,
   layout: HeaderLayout,
@@ -92,7 +107,7 @@ function labelOf(
   const texts: string[] = [];
   for (let r = from; r <= to; r++) {
     const t = cellText(ws, r, col);
-    if (t) texts.push(t);
+    if (t && !isStrayNumber(t)) texts.push(t);
   }
   // над блоком периода часто стоят две строки: голая дата месяца и подпись акта.
   // Подпись информативнее, дата остаётся подсказкой месяца.
@@ -171,6 +186,15 @@ function fillMonthYears(periods: PeriodGroup[], yearHint: number | null): void {
     p.meta.monthDate = `${year}-${String(p.meta.monthIndex + 1).padStart(2, '0')}-01`;
     prevIndex = p.meta.monthIndex;
   }
+}
+
+/** Есть ли в графе хоть одно число в строках данных (выборка сверху таблицы). */
+function hasData(ws: SheetGrid, layout: HeaderLayout, col: number): boolean {
+  const to = Math.min(ws.rowCount, layout.dataStartRow + DATA_PROBE_ROWS);
+  for (let r = layout.dataStartRow; r <= to; r++) {
+    if (cellNum(ws, r, col) !== null) return true;
+  }
+  return false;
 }
 
 export function detectPeriodGroups(
@@ -261,7 +285,10 @@ export function detectPeriodGroups(
     // справа от таблицы часто висят рабочие колонки автора файла («ПРОВЕРКА», «не
     // печатать», «Выполнено в 2025 г») — у них подпись есть, но она не про период
     if (!fromBlock && g.label && !isPeriodLabel(g.label)) {
-      warnings.push(`Графа «${g.label}» не похожа на период КС-2 — пропущена`);
+      // пустая графа — просто мусор в книге, сообщать не о чем
+      if (hasData(ws, layout, amountCol)) {
+        warnings.push(`Графа «${g.label}» не похожа на период КС-2 — пропущена`);
+      }
       continue;
     }
 

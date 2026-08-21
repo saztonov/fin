@@ -46,10 +46,14 @@ export const workItems = pgTable(
     characteristic: text('characteristic').notNull().default(''),
     unit: text('unit').notNull().default(''),
     contractQty: numeric('contract_qty', { precision: 15, scale: 6 }).notNull().default('0'),
-    unitPrice: numeric('unit_price', { precision: 18, scale: 2 }).notNull().default('0'),
-    materialUnitCost: numeric('material_unit_cost', { precision: 18, scale: 2 }),
-    workUnitCost: numeric('work_unit_cost', { precision: 18, scale: 2 }),
+    // расценка — 6 знаков: в ведомостях она с 4–6 знаками, урезание до копеек
+    // ломало бы qty × price при ручном вводе КС-2
+    unitPrice: numeric('unit_price', { precision: 18, scale: 6 }).notNull().default('0'),
+    materialUnitCost: numeric('material_unit_cost', { precision: 18, scale: 6 }),
+    workUnitCost: numeric('work_unit_cost', { precision: 18, scale: 6 }),
     contractTotal: numeric('contract_total', { precision: 18, scale: 2 }).notNull().default('0'),
+    /** контрольная графа «Выполнено с нач. ст-ва» из файла импорта — только для сверки */
+    fileExecutedTotal: numeric('file_executed_total', { precision: 18, scale: 2 }),
     budgetArticle: text('budget_article').notNull().default(''),
     note: text('note').notNull().default(''),
     amendmentId: uuid('amendment_id').references(() => amendments.id),

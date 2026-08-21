@@ -16,6 +16,7 @@ function item(partial: Partial<ParsedItem> & { tmpId: string }): ParsedItem {
     materialUnitCost: null,
     workUnitCost: null,
     contractTotal: '0.00',
+    fileExecutedTotal: null,
     budgetArticle: '',
     rowNumber: 1,
     ...partial,
@@ -38,6 +39,18 @@ describe('detectAggregates', () => {
     expect(items[3]!.kind).toBe('nomenclature');
     expect(items[3]!.kvrTmpId).toBe('kvr0');
     expect(warnings).toHaveLength(1);
+  });
+
+  it('строку с явной пометкой в колонке «Вид» эвристика не трогает', () => {
+    const items: ParsedItem[] = [
+      item({ tmpId: 'head', contractTotal: '100.00' }),
+      item({ tmpId: 'a', contractTotal: '60.00' }),
+      item({ tmpId: 'b', contractTotal: '40.00' }),
+    ];
+    const warnings: string[] = [];
+    detectAggregates(items, warnings, new Set(['head']));
+    expect(items[0]!.kind).toBe('nomenclature');
+    expect(warnings).toHaveLength(0);
   });
 
   it('совпадение с одной строкой — не агрегат (минимум две)', () => {

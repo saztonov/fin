@@ -73,6 +73,12 @@ body,
   background: #fff1f0;
 }
 
+/* расхождение с исходным Excel: обводка внутрь, чтобы не сдвигать сетку таблицы */
+.ks6-cell--mismatch {
+  box-shadow: inset 0 0 0 2px #cf1322;
+  background: #fff1f0;
+}
+
 .ks6-period-head {
   display: flex;
   flex-direction: column;

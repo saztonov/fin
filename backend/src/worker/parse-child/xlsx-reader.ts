@@ -24,11 +24,18 @@ export interface SheetInfo {
 export interface CellValue {
   /** строка, число или ISO-дата (yyyy-mm-dd) для ячеек с датовым форматом */
   value: string | number | null;
+  /**
+   * Исходный десятичный текст числовой ячейки из XML («1234.565»), до превращения
+   * в double. Деньги читаются именно отсюда: `Number` + `toFixed(2)` теряет копейку
+   * (`(1.005).toFixed(2)` → «1.00»), а половина реальных ведомостей на этом и стоит.
+   * Для нечисловых ячеек — пустая строка.
+   */
+  text: string;
   isDate: boolean;
   bold: boolean;
 }
 
-const EMPTY: CellValue = { value: null, isDate: false, bold: false };
+const EMPTY: CellValue = { value: null, text: '', isDate: false, bold: false };
 
 /** Сетка одного листа: разрежённая, доступ по (row, col) с 1. */
 export class SheetGrid {
@@ -373,6 +380,7 @@ async function readSheetGrid(
         if (buf !== '') {
           const bold = styleIdx >= 0 && styles.xfIsBold[styleIdx] === true;
           let value: string | number | null;
+          let text = '';
           let isDate = false;
           if (cellType === 's') {
             value = sst[Number(buf)] ?? '';
@@ -392,7 +400,10 @@ async function readSheetGrid(
                   value = iso;
                   isDate = true;
                 } else value = n;
-              } else value = n;
+              } else {
+                value = n;
+                text = buf;
+              }
             } else value = buf;
           }
           if (value !== null && value !== '') {
@@ -401,7 +412,7 @@ async function readSheetGrid(
               line = new Map<number, CellValue>();
               cells.set(row, line);
             }
-            line.set(col, { value, isDate, bold });
+            line.set(col, { value, text, isDate, bold });
             if (row > maxRow) maxRow = row;
             if (col > maxCol) maxCol = col;
           }

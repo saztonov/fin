@@ -16,6 +16,7 @@ export interface Ks6TableRow {
   amendmentNumber?: string | null;
   contractQty?: string;
   unitPrice?: string;
+  unitPriceGross?: string;
   contractTotal?: string;
   executedQty?: string;
   executedAmount?: string;
@@ -24,6 +25,17 @@ export interface Ks6TableRow {
   byPeriodQty: Record<string, string>;
   byPeriodAmount: Record<string, string>;
   collapsed?: boolean;
+  /**
+   * Расхождения с исходным Excel: договорная сумма против «Кол-во × Цена» и
+   * выполнение против контрольной графы файла. Ячейки с ними обводятся красным.
+   */
+  totalMismatch?: string | null;
+  /** значение контрольной графы файла — показывается в подсказке */
+  fileExecutedTotal?: string | null;
+  executedMismatch?: string | null;
+  /** для строки «Итого»: «Итого» книги и имя файла, с которым сверялись */
+  fileContractTotal?: string | null;
+  fileTotalsName?: string | null;
 }
 
 /** Плоские строки таблицы: иерархия → уровни, свёрнутые разделы скрыты, общий итог в конце. */
@@ -82,6 +94,7 @@ export function useKs6Rows(grid: Ks6Grid | undefined, collapsed: Set<string>): K
         amendmentNumber: row.amendmentNumber,
         contractQty: row.contractQty,
         unitPrice: row.unitPrice,
+        unitPriceGross: row.unitPriceGross,
         contractTotal: row.contractTotal,
         executedQty: row.executedQty,
         executedAmount: row.executedAmount,
@@ -89,20 +102,30 @@ export function useKs6Rows(grid: Ks6Grid | undefined, collapsed: Set<string>): K
         remainderAmount: row.remainderAmount,
         byPeriodQty,
         byPeriodAmount,
+        totalMismatch: row.totalMismatch,
+        fileExecutedTotal: row.fileExecutedTotal,
+        executedMismatch: row.executedMismatch,
       });
     }
 
+    const { totals } = grid;
+    const netTitle = totals.vatMode === 'net' || totals.vatView === 'net';
     rows.push({
       key: '__grand_total__',
       rowType: 'grandTotal',
       level: 0,
       sectionId: null,
-      name: 'Итого, руб., в т.ч. НДС',
-      contractTotal: grid.totals.contractTotal,
-      executedAmount: grid.totals.executedAmount,
-      remainderAmount: grid.totals.remainderAmount,
+      name: netTitle ? 'Итого, руб., без НДС' : 'Итого, руб., в т.ч. НДС',
+      contractTotal: totals.contractTotal,
+      executedAmount: totals.executedAmount,
+      remainderAmount: totals.remainderAmount,
       byPeriodQty: {},
-      byPeriodAmount: grid.totals.byPeriod,
+      byPeriodAmount: totals.byPeriod,
+      totalMismatch: totals.contractMismatch,
+      fileContractTotal: totals.fileContractTotal,
+      fileExecutedTotal: totals.fileExecutedTotal,
+      executedMismatch: totals.executedMismatch,
+      fileTotalsName: totals.fileTotalsSource?.fileName ?? null,
     });
     return rows;
   }, [grid, collapsed]);

@@ -38,8 +38,13 @@ export interface RowVerdict {
   kind: RowKind;
   /** глубина раздела (1 — верхний уровень); для позиций не используется */
   depth: number;
-  /** источник решения — попадает в предупреждения и в отладку */
-  source: 'kind-column' | 'level-column' | 'code-depth' | 'shape';
+  /**
+   * Источник решения. `kind-column` — «Вид» с распознанной пометкой (КВР,
+   * Номенклатура, в т.ч.): единственный источник, который прямо отличает агрегат от
+   * позиции. `kind-text` — «Вид» заполнен своим текстом («не в системе»): понятно,
+   * что это строка сметы, но не понятно, агрегат ли она.
+   */
+  source: 'kind-column' | 'kind-text' | 'level-column' | 'code-depth' | 'shape';
 }
 
 const KIND_MAP: Record<string, RowKind> = {
@@ -51,10 +56,14 @@ const KIND_MAP: Record<string, RowKind> = {
   'в том числе': 'subline',
 };
 
-/** «Итого», «Итого по разделу», «ВСЕГО по объекту», «НДС 20%» — контрольные строки. */
+/**
+ * «Итого», «Итого по разделу», «ВСЕГО по объекту», «НДС 20%», «БЕЗ НДС» —
+ * контрольные строки. Под итогом документа они идут блоком (ЗИЛ: «НДС», «БЕЗ НДС»).
+ */
 export function isTotalRow(name: string): boolean {
   const s = normName(name);
   if (s.startsWith('итого') || s.startsWith('всего')) return true;
+  if (/^(без|с|в т\.?\s?ч\.?)\s*ндс/.test(s)) return true;
   return s === 'ндс' || /^ндс[\s\d]/.test(s);
 }
 
@@ -109,7 +118,7 @@ export function classifyRow(f: RowFacts): RowVerdict {
 
   if (kindKey) {
     // «Вид» заполнен чем-то своим («не в системе») — это всё равно строка сметы
-    return { kind: 'nomenclature', depth: 0, source: 'kind-column' };
+    return { kind: 'nomenclature', depth: 0, source: 'kind-text' };
   }
 
   // «Вид» пуст. Если лист вообще размечает детализацию («в т.ч.»), то пустой «Вид»

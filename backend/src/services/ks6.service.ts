@@ -3,12 +3,26 @@ import type { Db } from '../db/client.js';
 import {
   amendments,
   contracts,
+  importFiles,
   ks2Documents,
   ks2Lines,
   ks6Sections,
   workItems,
 } from '../db/schema/index.js';
-import { add, dec, sumStrings, vatFromGross } from '../lib/money.js';
+import {
+  add,
+  dec,
+  lineAmount,
+  netFromGross,
+  netPriceFromGross,
+  sub,
+  sumStrings,
+  vatFromGross,
+  vatRateOn,
+} from '../lib/money.js';
+
+/** Режим отображения сумм: gross — как в договоре (с НДС), net — без НДС. */
+export type VatView = 'gross' | 'net';
 
 export interface PeriodInfo {
   id: string;
@@ -19,7 +33,12 @@ export interface PeriodInfo {
   status: 'draft' | 'approved';
   source: 'manual' | 'import';
   importLabel: string | null;
+  /** сумма документа с НДС — независимо от режима отображения таблицы */
   totalAmount: string;
+  /** ставка на дату периода: 20% до 31.12.2025, 22% с 01.01.2026; 0 — договор без НДС */
+  vatRate: number;
+  vatAmount: string;
+  netAmount: string;
 }
 
 export interface PeriodCell {
@@ -39,6 +58,8 @@ export interface GridItemRow {
   unit: string;
   contractQty: string;
   unitPrice: string;
+  /** цена как в договоре (с НДС) — по ней грид считает предпросмотр правки объёма */
+  unitPriceGross: string;
   materialUnitCost: string | null;
   workUnitCost: string | null;
   contractTotal: string;
@@ -50,6 +71,13 @@ export interface GridItemRow {
   remainderQty: string;
   remainderAmount: string;
   byPeriod: Record<string, PeriodCell>;
+  /**
+   * Расхождения с исходным Excel — грид подсвечивает их красной обводкой.
+   * null означает «сверить не с чем» либо «сходится до копейки».
+   */
+  totalMismatch: string | null;
+  fileExecutedTotal: string | null;
+  executedMismatch: string | null;
 }
 
 export interface GridSectionRow {
@@ -80,16 +108,38 @@ export interface Ks6Grid {
     remainderAmount: string;
     /** режим цен договора: gross — с НДС, net — без НДС */
     vatMode: 'gross' | 'net';
+    /** режим отображения, в котором посчитаны суммы выше */
+    vatView: VatView;
     vatContract: string;
     vatExecuted: string;
+    /** ставка на дату договора; по периодам ставка своя — см. PeriodInfo.vatRate */
+    vatRateContract: number;
     byPeriod: Record<string, string>;
     catalogAmount: string;
     catalogMismatch: boolean;
+    /** контрольные суммы последнего применённого импорта и расхождения с ними */
+    fileContractTotal: string | null;
+    contractMismatch: string | null;
+    fileExecutedTotal: string | null;
+    executedMismatch: string | null;
+    fileTotalsSource: { fileName: string; appliedAt: string } | null;
   };
 }
 
+/** Ненулевая разница строкой; ноль и «не с чем сверять» дают null. */
+function mismatch(actual: string, control: string | null): string | null {
+  if (control === null || control === '') return null;
+  const diff = dec(actual).sub(dec(control));
+  return diff.isZero() ? null : diff.toFixed(2);
+}
+
 /** Полный грид КС-6 по договору: строки, помесячные колонки, агрегаты, итоги. */
-export async function getKs6Grid(db: Db, objectId: string): Promise<Ks6Grid> {
+export async function getKs6Grid(
+  db: Db,
+  objectId: string,
+  opts: { vatView?: VatView } = {},
+): Promise<Ks6Grid> {
+  const vatView: VatView = opts.vatView ?? 'gross';
   const [contract] = await db
     .select()
     .from(contracts)
@@ -105,11 +155,18 @@ export async function getKs6Grid(db: Db, objectId: string): Promise<Ks6Grid> {
         executedAmount: '0.00',
         remainderAmount: '0.00',
         vatMode: 'gross',
+        vatView,
         vatContract: '0.00',
         vatExecuted: '0.00',
+        vatRateContract: vatRateOn(null),
         byPeriod: {},
         catalogAmount: '0.00',
         catalogMismatch: false,
+        fileContractTotal: null,
+        contractMismatch: null,
+        fileExecutedTotal: null,
+        executedMismatch: null,
+        fileTotalsSource: null,
       },
     };
   }
@@ -171,6 +228,28 @@ export async function getKs6Grid(db: Db, objectId: string): Promise<Ks6Grid> {
   }
 
   const approvedIds = new Set(docs.filter((d) => d.status === 'approved').map((d) => d.id));
+  // сверка с контрольной графой файла идёт только по импортированным КС-2: КС-2,
+  // введённые экономистом вручную, законно уводят выполнение от значения в книге
+  const importedIds = new Set(docs.filter((d) => d.source === 'import').map((d) => d.id));
+
+  // Режим «без НДС»: суммы выделяются по ставке на дату — периода для выполнения,
+  // договора или ДС для договорных значений. Договор с vat_mode='net' уже нетто.
+  const netContract = contract.vatMode === 'net';
+  const toNet = vatView === 'net' && !netContract;
+  const amendmentDateById = new Map(amendmentRows.map((a) => [a.id, a.dateSigned]));
+  const contractDateOf = (amendmentId: string | null): string | null =>
+    (amendmentId ? amendmentDateById.get(amendmentId) : null) ?? contract.dateSigned;
+  const docDateById = new Map(docs.map((d) => [d.id, d.periodFrom ?? d.docDate]));
+
+  const showContract = (amount: string, amendmentId: string | null): string =>
+    toNet ? netFromGross(amount, contractDateOf(amendmentId)) : amount;
+  const showPrice = (price: string, amendmentId: string | null): string =>
+    toNet ? netPriceFromGross(price, contractDateOf(amendmentId)) : price;
+  const showCell = (amount: string, docId: string): string =>
+    toNet ? netFromGross(amount, docDateById.get(docId) ?? null) : amount;
+
+  // выполнение по импортированным КС-2, всегда с НДС — им сверяемся с файлом
+  const importedGrossByItem = new Map<string, string>();
 
   // строки работ с выполнением
   const itemGrid = new Map<string, GridItemRow>();
@@ -178,16 +257,21 @@ export async function getKs6Grid(db: Db, objectId: string): Promise<Ks6Grid> {
     const byPeriod: Record<string, PeriodCell> = {};
     let execQty = dec(0);
     let execAmount = dec(0);
+    let importedGross = dec(0);
     const cells = cellByItem.get(it.id);
     if (cells) {
       for (const [docId, cell] of cells) {
-        byPeriod[docId] = cell;
+        const shown = { qty: cell.qty, amount: showCell(cell.amount, docId) };
+        byPeriod[docId] = shown;
         if (approvedIds.has(docId)) {
           execQty = execQty.add(dec(cell.qty));
-          execAmount = execAmount.add(dec(cell.amount));
+          execAmount = execAmount.add(dec(shown.amount));
         }
+        if (importedIds.has(docId)) importedGross = importedGross.add(dec(cell.amount));
       }
     }
+    importedGrossByItem.set(it.id, importedGross.toFixed(2));
+    const contractTotal = showContract(it.contractTotal, it.amendmentId);
     itemGrid.set(it.id, {
       type: 'item',
       id: it.id,
@@ -199,18 +283,28 @@ export async function getKs6Grid(db: Db, objectId: string): Promise<Ks6Grid> {
       characteristic: it.characteristic,
       unit: it.unit,
       contractQty: it.contractQty,
-      unitPrice: it.unitPrice,
-      materialUnitCost: it.materialUnitCost,
-      workUnitCost: it.workUnitCost,
-      contractTotal: it.contractTotal,
+      unitPrice: showPrice(it.unitPrice, it.amendmentId),
+      unitPriceGross: it.unitPrice,
+      materialUnitCost: it.materialUnitCost && showPrice(it.materialUnitCost, it.amendmentId),
+      workUnitCost: it.workUnitCost && showPrice(it.workUnitCost, it.amendmentId),
+      contractTotal,
       amendmentId: it.amendmentId,
       amendmentNumber: it.amendmentId ? (amendmentNumberById.get(it.amendmentId) ?? null) : null,
       sortOrder: it.sortOrder,
       executedQty: execQty.toFixed(6),
       executedAmount: execAmount.toFixed(2),
       remainderQty: dec(it.contractQty).sub(execQty).toFixed(6),
-      remainderAmount: dec(it.contractTotal).sub(execAmount).toFixed(2),
+      remainderAmount: dec(contractTotal).sub(execAmount).toFixed(2),
       byPeriod,
+      // сверки — на суммах как в БД и в файле, то есть с НДС: расхождение с исходным
+      // Excel не зависит от того, в каком режиме сейчас смотрят таблицу
+      totalMismatch:
+        dec(it.contractQty).isZero() || dec(it.unitPrice).isZero()
+          ? null
+          : mismatch(it.contractTotal, lineAmount(it.contractQty, it.unitPrice)),
+      fileExecutedTotal: it.fileExecutedTotal,
+      executedMismatch:
+        importedIds.size === 0 ? null : mismatch(importedGross.toFixed(2), it.fileExecutedTotal),
     });
   }
 
@@ -220,10 +314,12 @@ export async function getKs6Grid(db: Db, objectId: string): Promise<Ks6Grid> {
     const kvr = itemGrid.get(it.id)!;
     const children = itemRows.filter((c) => c.kvrItemId === it.id && c.kind === 'nomenclature');
     let execAmount = dec(0);
+    let importedGross = dec(0);
     const byPeriod: Record<string, PeriodCell> = {};
     for (const child of children) {
       const row = itemGrid.get(child.id)!;
       execAmount = execAmount.add(dec(row.executedAmount));
+      importedGross = importedGross.add(dec(importedGrossByItem.get(child.id) ?? '0'));
       for (const [docId, cell] of Object.entries(row.byPeriod)) {
         const acc = byPeriod[docId] ?? { qty: '', amount: '0.00' };
         acc.amount = add(acc.amount, cell.amount);
@@ -235,6 +331,9 @@ export async function getKs6Grid(db: Db, objectId: string): Promise<Ks6Grid> {
     kvr.executedQty = '';
     kvr.remainderQty = '';
     kvr.byPeriod = byPeriod;
+    // выполнение КВР портал складывает из номенклатур — сверяем с файлом уже эту сумму
+    kvr.executedMismatch =
+      importedIds.size === 0 ? null : mismatch(importedGross.toFixed(2), kvr.fileExecutedTotal);
   }
 
   // дерево разделов: уровень и агрегаты снизу вверх
@@ -307,37 +406,75 @@ export async function getKs6Grid(db: Db, objectId: string): Promise<Ks6Grid> {
 
   // итоги
   const nomRows = [...itemGrid.values()].filter((r) => r.kind === 'nomenclature');
+  const nomSource = itemRows.filter((it) => it.kind === 'nomenclature');
   const contractTotal = sumStrings(nomRows.map((r) => r.contractTotal));
   const executedAmount = sumStrings(nomRows.map((r) => r.executedAmount));
   const byPeriodTotals: Record<string, string> = {};
+  // валовые суммы колонок нужны и в режиме «без НДС»: по ним живут выделение НДС,
+  // сумма документа в панели КС-2 и сверка с контрольной колонкой файла
+  const byPeriodGross: Record<string, string> = {};
   for (const doc of docs) {
     byPeriodTotals[doc.id] = sumStrings(nomRows.map((r) => r.byPeriod[doc.id]?.amount));
+    byPeriodGross[doc.id] = toNet
+      ? sumStrings(
+          nomSource.map((it) => cellByItem.get(it.id)?.get(doc.id)?.amount),
+        )
+      : byPeriodTotals[doc.id]!;
   }
-
-  const periods: PeriodInfo[] = docs.map((d) => ({
-    id: d.id,
-    number: d.number,
-    docDate: d.docDate,
-    periodFrom: d.periodFrom,
-    periodTo: d.periodTo,
-    status: d.status,
-    source: d.source,
-    importLabel: d.importLabel,
-    totalAmount: byPeriodTotals[d.id] ?? '0.00',
-  }));
-
-  const catalogAmount = add(contract.amount, ...amendmentRows.map((a) => a.amount));
 
   // НДС считается по дате периода: до 31.12.2025 — 20%, с 01.01.2026 — 22%.
   // Договор без НДС (vat_mode = 'net') выделять нечего.
-  const net = contract.vatMode === 'net';
-  const vatExecuted = net
+  const rateOfDoc = (d: (typeof docs)[number]) => vatRateOn(d.periodFrom ?? d.docDate ?? null);
+
+  const periods: PeriodInfo[] = docs.map((d) => {
+    const gross = byPeriodGross[d.id] ?? '0.00';
+    const vat = netContract ? '0.00' : vatFromGross(gross, d.periodFrom ?? d.docDate ?? null);
+    return {
+      id: d.id,
+      number: d.number,
+      docDate: d.docDate,
+      periodFrom: d.periodFrom,
+      periodTo: d.periodTo,
+      status: d.status,
+      source: d.source,
+      importLabel: d.importLabel,
+      totalAmount: gross,
+      vatRate: netContract ? 0 : rateOfDoc(d),
+      vatAmount: vat,
+      netAmount: sub(gross, vat),
+    };
+  });
+
+  const catalogAmount = add(contract.amount, ...amendmentRows.map((a) => a.amount));
+
+  // НДС итогов — сумма построчных, а не выделение от итога: только так «без НДС»
+  // по строкам складывается в «без НДС» по документу до копейки
+  const vatContract = netContract
     ? '0.00'
     : sumStrings(
-        docs.map((d) =>
-          vatFromGross(byPeriodTotals[d.id] ?? '0', d.periodFrom ?? d.docDate ?? null),
-        ),
+        nomSource.map((it) => vatFromGross(it.contractTotal, contractDateOf(it.amendmentId))),
       );
+  const vatExecuted = netContract
+    ? '0.00'
+    : sumStrings(
+        docs
+          .filter((d) => approvedIds.has(d.id))
+          .map((d) => vatFromGross(byPeriodGross[d.id] ?? '0', d.periodFrom ?? d.docDate ?? null)),
+      );
+
+  // сверка с контрольными суммами последнего применённого импорта
+  const contractTotalGross = toNet
+    ? sumStrings(nomSource.map((it) => it.contractTotal))
+    : contractTotal;
+  const importedExecutedGross = sumStrings(
+    nomSource.map((it) => importedGrossByItem.get(it.id)),
+  );
+  const [fileImport] = contract.fileTotalsImportId
+    ? await db
+        .select({ originalName: importFiles.originalName, updatedAt: importFiles.updatedAt })
+        .from(importFiles)
+        .where(eq(importFiles.id, contract.fileTotalsImportId))
+    : [];
 
   return {
     contract,
@@ -349,11 +486,24 @@ export async function getKs6Grid(db: Db, objectId: string): Promise<Ks6Grid> {
       executedAmount,
       remainderAmount: dec(contractTotal).sub(dec(executedAmount)).toFixed(2),
       vatMode: contract.vatMode,
-      vatContract: net ? '0.00' : vatFromGross(contractTotal, contract.dateSigned),
+      vatView,
+      vatContract,
       vatExecuted,
+      vatRateContract: netContract ? 0 : vatRateOn(contract.dateSigned),
       byPeriod: byPeriodTotals,
       catalogAmount,
-      catalogMismatch: !dec(catalogAmount).isZero() && !dec(catalogAmount).eq(dec(contractTotal)),
+      catalogMismatch:
+        !dec(catalogAmount).isZero() && !dec(catalogAmount).eq(dec(contractTotalGross)),
+      fileContractTotal: contract.fileContractTotal,
+      contractMismatch: mismatch(contractTotalGross, contract.fileContractTotal),
+      fileExecutedTotal: contract.fileExecutedTotal,
+      executedMismatch:
+        importedIds.size === 0
+          ? null
+          : mismatch(importedExecutedGross, contract.fileExecutedTotal),
+      fileTotalsSource: fileImport
+        ? { fileName: fileImport.originalName, appliedAt: fileImport.updatedAt.toISOString() }
+        : null,
     },
   };
 }

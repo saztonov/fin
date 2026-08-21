@@ -8,11 +8,22 @@ const EPS = 0.05;
  * номенклатур задваивает суммы. Правило: строка-номенклатура, чей «Всего»
  * равен сумме ≥2 следующих подряд номенклатур того же раздела, — агрегат:
  * переводится в kind='kvr', строки ниже привязываются к ней.
+ *
+ * Эвристика — источник последней очереди: `explicitKinds` содержит `tmpId` строк,
+ * вид которых прямо указан в колонке «Вид», и такие строки она не трогает. Иначе
+ * случайное совпадение сумм ломает разметку файла (ЗИЛ: «Устройство выравнивающей
+ * стенки Корпус 1» = 2 × 987 799.67, и ровно столько же дают четыре строки ниже —
+ * одинаковые расценки по корпусам).
  */
-export function detectAggregates(items: ParsedItem[], warnings: string[]): void {
+export function detectAggregates(
+  items: ParsedItem[],
+  warnings: string[],
+  explicitKinds: ReadonlySet<string> = new Set(),
+): void {
   for (let i = 0; i < items.length; i++) {
     const head = items[i]!;
     if (head.kind !== 'nomenclature') continue;
+    if (explicitKinds.has(head.tmpId)) continue;
     const target = Number(head.contractTotal);
     if (!(target > 0)) continue;
     let acc = 0;

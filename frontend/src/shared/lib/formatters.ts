@@ -8,11 +8,27 @@ const qtyFmt = new Intl.NumberFormat('ru-RU', {
   maximumFractionDigits: 3,
 });
 
+/**
+ * Расценка хранится с 6 знаками: в ведомостях заказчиков «1 234,5678 руб./м3» —
+ * обычное дело. Показываем не меньше копеек и не больше того, что в ней есть.
+ */
+const priceFmt = new Intl.NumberFormat('ru-RU', {
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 6,
+});
+
 export function fmtMoney(value: string | number | null | undefined): string {
   if (value === null || value === undefined || value === '') return '';
   const n = Number(value);
   if (!Number.isFinite(n)) return String(value);
   return moneyFmt.format(n);
+}
+
+export function fmtPrice(value: string | number | null | undefined): string {
+  if (value === null || value === undefined || value === '') return '';
+  const n = Number(value);
+  if (!Number.isFinite(n)) return String(value);
+  return priceFmt.format(n);
 }
 
 export function fmtQty(value: string | number | null | undefined): string {

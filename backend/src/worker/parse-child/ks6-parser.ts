@@ -2,9 +2,26 @@ import { detectAggregates } from './aggregate-pass.js';
 import { detectHeader, type HeaderLayout } from './header-detect.js';
 import { normHeader } from './header-dictionary.js';
 import { detectPeriodGroups } from './period-groups.js';
-import type { ParsedImport, ParsedItem, ParsedKs2Column, ParsedSection } from './parsed-schema.js';
+import {
+  TOTALS_EPS,
+  type ParsedImport,
+  type ParsedItem,
+  type ParsedKs2Column,
+  type ParsedSection,
+} from './parsed-schema.js';
 import { classifyRow, isDocumentTotalRow, isTotalRow, type RowFacts } from './row-classify.js';
-import { cellDate, cellNum, cellText, isBold, money2, parseRuDate, qty6 } from './sheet-utils.js';
+import {
+  cellDate,
+  cellDecimal,
+  cellNum,
+  cellText,
+  isBold,
+  money2,
+  parseRuDate,
+  price6,
+  qty6,
+} from './sheet-utils.js';
+import { dec } from '../../lib/money.js';
 import type { SheetGrid } from './xlsx-reader.js';
 
 /**
@@ -47,7 +64,10 @@ export function parseSheet(ws: SheetGrid, kind: 'psdc' | 'ks6'): ParsedImport {
   let lastNomenclature: ParsedItem | null = null;
   let seq = 0;
   const nextId = (p: string) => `${p}${++seq}`;
-  let usedExplicitStructure = false;
+  // строки, чей вид взят из колонки «Вид»: эвристика подбора агрегатов по совпадению
+  // сумм их не трогает. «Уровень» и точечный шифр сюда не входят — они задают только
+  // глубину, а агрегат от обычной позиции не отличают
+  const explicitKinds = new Set<string>();
 
   const pushSection = (name: string, depth: number, row: number, total: number | null = null): ParsedSection => {
     // глубина не выведена из файла: раздел с суммой считаем верхним уровнем,
@@ -85,7 +105,7 @@ export function parseSheet(ws: SheetGrid, kind: 'psdc' | 'ks6'): ParsedImport {
   const kindColumnUsed = kindStats.items >= 5;
   const sublineMarkerUsed = kindStats.sublines >= 3;
   // накопленная сумма номенклатуры — по ней отличаем итог документа от итога раздела
-  let nomAccum = 0;
+  let nomAccum = dec(0);
 
   for (let r = layout.dataStartRow; r <= ws.rowCount; r++) {
     const name = cellText(ws, r, colName);
@@ -93,6 +113,12 @@ export function parseSheet(ws: SheetGrid, kind: 'psdc' | 'ks6'): ParsedImport {
 
     // строка «цифровой нумерации граф» иногда стоит не сразу под шапкой
     if (/^\d{1,3}$/.test(name) && !(cols.unit && cellText(ws, r, cols.unit))) continue;
+
+    // точные значения для записи; в RowFacts ниже идут те же числа как double —
+    // там они нужны только для распознавания вида строки
+    const qtyRaw = cols.qty ? cellDecimal(ws, r, cols.qty) : null;
+    const priceRaw = cols.unitPrice ? cellDecimal(ws, r, cols.unitPrice) : null;
+    const totalRaw = cols.total ? cellDecimal(ws, r, cols.total) : null;
 
     const facts: RowFacts = {
       kindText: cols.kind ? cellText(ws, r, cols.kind) : '',
@@ -104,16 +130,13 @@ export function parseSheet(ws: SheetGrid, kind: 'psdc' | 'ks6'): ParsedImport {
       unitColumnPresent: cols.unit !== undefined,
       kindColumnUsed,
       sublineMarkerUsed,
-      qty: cols.qty ? cellNum(ws, r, cols.qty) : null,
-      unitPrice: cols.unitPrice ? cellNum(ws, r, cols.unitPrice) : null,
-      total: cols.total ? cellNum(ws, r, cols.total) : null,
+      qty: qtyRaw === null ? null : Number(qtyRaw),
+      unitPrice: priceRaw === null ? null : Number(priceRaw),
+      total: totalRaw === null ? null : Number(totalRaw),
       bold: isBold(ws, r, colName),
     };
 
     const verdict = classifyRow(facts);
-    if (verdict.source === 'kind-column' || verdict.source === 'level-column') {
-      usedExplicitStructure = true;
-    }
 
     if (verdict.kind === 'total') {
       // «Итого по разделу» посреди таблицы чтение не прерывает. А вот итог всего
@@ -121,21 +144,33 @@ export function parseSheet(ws: SheetGrid, kind: 'psdc' | 'ks6'): ParsedImport {
       // сметы, и без остановки суммы удваиваются.
       const total = facts.total;
       const isGrandTotal =
-        total !== null && nomAccum > 0 && total >= nomAccum * 0.95 && isDocumentTotalRow(name);
-      if (total !== null && (isGrandTotal || controlsTotal === null || total > Number(controlsTotal))) {
-        controlsTotal = money2(total);
-        controlsExecuted = execControl ? money2(cellNum(ws, r, execControl.amountCol)) : null;
+        total !== null &&
+        nomAccum.gt(0) &&
+        dec(totalRaw!).gte(nomAccum.mul(0.95)) &&
+        isDocumentTotalRow(name);
+      if (
+        totalRaw !== null &&
+        (isGrandTotal || controlsTotal === null || dec(totalRaw).gt(dec(controlsTotal)))
+      ) {
+        controlsTotal = money2(totalRaw);
+        controlsExecuted = execControl
+          ? money2(cellDecimal(ws, r, execControl.amountCol))
+          : null;
       }
       totalsRowSeen = true;
       for (let r2 = r + 1; r2 <= Math.min(r + 3, ws.rowCount); r2++) {
         if (cellText(ws, r2, colName).includes('НДС') && cols.total) {
-          controlsVat = money2(cellNum(ws, r2, cols.total));
+          controlsVat = money2(cellDecimal(ws, r2, cols.total));
           break;
         }
       }
       if (isGrandTotal) {
-        if (r < ws.rowCount - 5) {
-          warnings.push(`Строка ${r}: итог документа — данные ниже (${ws.rowCount - r} строк) не читались`);
+        // под итогом обычно лежат «НДС», «БЕЗ НДС» и пустые строки с черновыми
+        // числами автора файла — терять там нечего; предупреждаем только когда ниже
+        // действительно есть строки сметы (у Инджоя это второй вариант сметы)
+        const lost = countDataRowsBelow(ws, colName, cols.total, r);
+        if (lost > 0) {
+          warnings.push(`Строка ${r}: итог документа — данные ниже (${lost} строк) не читались`);
         }
         break;
       }
@@ -165,19 +200,25 @@ export function parseSheet(ws: SheetGrid, kind: 'psdc' | 'ks6'): ParsedImport {
       name,
       characteristic: cols.characteristic ? cellText(ws, r, cols.characteristic) : '',
       unit: facts.unit,
-      contractQty: qty6(facts.qty) ?? '0',
-      unitPrice: money2(facts.unitPrice) ?? '0.00',
-      materialUnitCost: cols.materialUnitPrice ? money2(cellNum(ws, r, cols.materialUnitPrice)) : null,
-      workUnitCost: cols.workUnitPrice ? money2(cellNum(ws, r, cols.workUnitPrice)) : null,
-      contractTotal: money2(facts.total) ?? '0.00',
+      contractQty: qty6(qtyRaw) ?? '0',
+      unitPrice: price6(priceRaw) ?? '0',
+      materialUnitCost: cols.materialUnitPrice
+        ? price6(cellDecimal(ws, r, cols.materialUnitPrice))
+        : null,
+      workUnitCost: cols.workUnitPrice ? price6(cellDecimal(ws, r, cols.workUnitPrice)) : null,
+      contractTotal: money2(totalRaw) ?? '0.00',
+      // контрольная графа «Выполнено с начала строительства» по этой строке: портал
+      // считает накопительный итог сам, а файловое значение хранится для сверки
+      fileExecutedTotal: execControl ? money2(cellDecimal(ws, r, execControl.amountCol)) : null,
       budgetArticle: cols.budgetArticle ? cellText(ws, r, cols.budgetArticle) : '',
       rowNumber: r,
     };
     items.push(item);
+    if (verdict.source === 'kind-column') explicitKinds.add(item.tmpId);
     if (kind === 'kvr') lastKvr = item;
     if (kind === 'nomenclature') {
       lastNomenclature = item;
-      nomAccum += facts.total ?? 0;
+      nomAccum = nomAccum.add(dec(item.contractTotal));
     }
   }
 
@@ -185,19 +226,23 @@ export function parseSheet(ws: SheetGrid, kind: 'psdc' | 'ks6'): ParsedImport {
     warnings.push('Строка «Итого» не найдена — контрольные суммы файла недоступны');
   }
 
-  // Агрегирующие строки («Прижимная стена» = сумма 7 строк ниже) встречаются и
-  // в файлах с колонкой «Вид»: без этого прохода их суммы задваиваются.
-  detectAggregates(items, warnings);
-  void usedExplicitStructure;
+  // Агрегирующие строки («Прижимная стена» = сумма 7 строк ниже) там, где вид строки
+  // из файла не выводится: у строк с явной колонкой «Вид» совпадение сумм ничего не
+  // значит (ЗИЛ: 30 обычных позиций с одинаковыми расценками по корпусам).
+  detectAggregates(items, warnings, explicitKinds);
 
   const nomItems = items.filter((i) => i.kind === 'nomenclature');
 
   // сверка с контрольными суммами файла: расхождение не блокирует импорт
   // (источник истины — строки номенклатуры), но должно быть видно в предпросмотре
   if (controlsTotal !== null) {
-    const sum = nomItems.reduce((acc, i) => acc + Number(i.contractTotal), 0);
-    const diff = sum - Number(controlsTotal);
-    if (Math.abs(diff) > Math.max(1, Math.abs(Number(controlsTotal)) * 0.001)) {
+    const sum = nomItems.reduce((acc, i) => acc.add(dec(i.contractTotal)), dec(0));
+    const diff = sum.sub(dec(controlsTotal));
+    // Допуск текстового предупреждения абсолютный, а не в процентах: на договоре в
+    // 18 млрд «0,1 %» — это 18 млн рублей, потеря такого масштаба прошла бы молча.
+    // Копеечные неувязки самих файлов в рубль укладываются и в предупреждение не
+    // выносятся — их видно точечно в гриде КС-6 (подсветка расхождений с файлом).
+    if (diff.abs().gt(TOTALS_EPS)) {
       warnings.push(
         `Σ строк номенклатуры ${sum.toFixed(2)} расходится с «Итого» файла ${controlsTotal} ` +
           `на ${diff.toFixed(2)} — проверьте, тот ли лист и не задваиваются ли строки`,
@@ -210,9 +255,9 @@ export function parseSheet(ws: SheetGrid, kind: 'psdc' | 'ks6'): ParsedImport {
   for (const g of groups.periods) {
     const cells: ParsedKs2Column['cells'] = [];
     for (const item of nomItems) {
-      const q = g.qtyCol === null ? null : cellNum(ws, item.rowNumber, g.qtyCol);
-      const a = cellNum(ws, item.rowNumber, g.amountCol);
-      if ((q === null || q === 0) && (a === null || a === 0)) continue;
+      const q = g.qtyCol === null ? null : cellDecimal(ws, item.rowNumber, g.qtyCol);
+      const a = cellDecimal(ws, item.rowNumber, g.amountCol);
+      if ((q === null || dec(q).isZero()) && (a === null || dec(a).isZero())) continue;
       cells.push({ itemTmpId: item.tmpId, qty: qty6(q) ?? '0', amount: money2(a) ?? '0.00' });
     }
     if (cells.length === 0) continue;
@@ -240,6 +285,29 @@ export function parseSheet(ws: SheetGrid, kind: 'psdc' | 'ks6'): ParsedImport {
     controls: { contractTotal: controlsTotal, vat: controlsVat, executedTotal: controlsExecuted },
     warnings,
   };
+}
+
+/**
+ * Сколько строк сметы осталось под итогом документа. Не считаются пустые строки,
+ * контрольные («НДС», «БЕЗ НДС», «Итого по …») и текст без денег — под итогом обычно
+ * лежат подписи сторон и черновые расчёты автора книги. Строка сметы — это строка с
+ * наименованием и суммой (у Инджоя под итогом лежит второй вариант сметы, и вот о
+ * нём предупредить нужно).
+ */
+function countDataRowsBelow(
+  ws: SheetGrid,
+  colName: number,
+  totalCol: number | undefined,
+  totalRow: number,
+): number {
+  let count = 0;
+  for (let r = totalRow + 1; r <= ws.rowCount; r++) {
+    const name = cellText(ws, r, colName);
+    if (!name || isTotalRow(name)) continue;
+    if (totalCol !== undefined && cellNum(ws, r, totalCol) === null) continue;
+    count += 1;
+  }
+  return count;
 }
 
 /** Насколько лист заполняет графу «Вид»: позиции сметы и пометки детализации. */

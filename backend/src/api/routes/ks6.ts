@@ -10,6 +10,9 @@ import { assertContractAccess, assertObjectExists } from '../plugins/auth.js';
 
 const idParam = z.object({ id: z.string().uuid() });
 
+/** Режим отображения сумм грида: с НДС (умолчание) или с выделенным НДС. */
+const gridQuery = z.object({ vat: z.enum(['gross', 'net']).default('gross') });
+
 const numStr = (msg: string) => z.string().regex(/^-?\d+(\.\d+)?$/, msg);
 
 const sectionSchema = z.object({
@@ -53,8 +56,9 @@ async function nextSortOrder(app: FastifyInstance, contractId: string, after?: n
 export async function ks6Routes(app: FastifyInstance) {
   app.get('/objects/:id/ks6', { preHandler: [app.authenticate] }, async (req) => {
     const { id } = idParam.parse(req.params);
+    const { vat } = gridQuery.parse(req.query);
     await assertObjectExists(app.db, req.authUser, id);
-    return getKs6Grid(app.db, id);
+    return getKs6Grid(app.db, id, { vatView: vat });
   });
 
   app.post(

@@ -1,7 +1,14 @@
 import { z } from 'zod';
 
 /** Версия парсера — пишется в import_files.parser_version. */
-export const PARSER_VERSION = '2.0.0';
+export const PARSER_VERSION = '2.1.0';
+
+/**
+ * Допуск при сверке с контрольными суммами файла, рубли. Абсолютный, а не в
+ * процентах: на договоре в 18 млрд «0,1 %» — это 18 млн рублей. Реальные книги
+ * заказчиков расходятся на копейки округления, и в рубль они укладываются.
+ */
+export const TOTALS_EPS = 1;
 
 const numStr = z.string().regex(/^-?\d+(\.\d+)?$/);
 
@@ -29,6 +36,12 @@ export const parsedItemSchema = z.object({
   materialUnitCost: numStr.nullable(),
   workUnitCost: numStr.nullable(),
   contractTotal: numStr,
+  /**
+   * Контрольная графа «Выполнено с начала строительства» по этой строке. Не
+   * импортируется как данные — накопительный итог портал считает сам; хранится,
+   * чтобы грид КС-6 постоянно показывал расхождение с исходным Excel.
+   */
+  fileExecutedTotal: numStr.nullable(),
   budgetArticle: z.string(),
   rowNumber: z.number().int(),
 });

@@ -2,11 +2,14 @@ import { Alert, Button, Empty, Result, Select, Skeleton, Space, Typography } fro
 import { useEffect, useMemo, useRef, useSyncExternalStore } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { useKs6Grid, useObjects, useSaveKs2Lines } from '../../api/hooks';
+import type { VatView } from '../../api/types';
 import { useAuth } from '../../auth/AuthContext';
+import { useLocalStorageState } from '../../shared/lib/useLocalStorageState';
 import { useFeedback } from '../../shared/lib/useFeedback';
 import { EditsStore } from './ks6/editsStore';
 import { Ks6Table } from './ks6/Ks6Table';
 import { Ks2Strip } from './Ks2Strip';
+import { filterPeriods } from './periodFilter';
 import { SummaryStats } from './SummaryStats';
 
 export function KsPage() {
@@ -15,9 +18,15 @@ export function KsPage() {
   const [params, setParams] = useSearchParams();
   const objectId = params.get('object');
   const selectedKs2 = params.get('ks2');
+  const rangeFrom = params.get('from');
+  const rangeTo = params.get('to');
+
+  // режим отображения сумм переживает перезагрузку: экономист работает то в одном,
+  // то в другом, и каждый раз переключать его заново неудобно
+  const [vatView, setVatView] = useLocalStorageState<VatView>('ks.vatView', 'gross');
 
   const objects = useObjects();
-  const grid = useKs6Grid(objectId);
+  const grid = useKs6Grid(objectId, vatView);
   const saveLines = useSaveKs2Lines(objectId);
 
   const storeRef = useRef(new EditsStore());
@@ -41,6 +50,13 @@ export function KsPage() {
   const selectedDraft = useMemo(
     () => grid.data?.periods.find((p) => p.id === selectedKs2 && p.status === 'draft') ?? null,
     [grid.data, selectedKs2],
+  );
+
+  // фильтр по периоду — только набор колонок КС-2; итоги «Выполнено всего» и «Остаток»
+  // считает бэкенд по всем утверждённым документам и фильтр их не затрагивает
+  const visiblePeriods = useMemo(
+    () => filterPeriods(grid.data?.periods ?? [], rangeFrom, rangeTo, selectedKs2),
+    [grid.data, rangeFrom, rangeTo, selectedKs2],
   );
 
   const doSave = async () => {
@@ -73,6 +89,8 @@ export function KsPage() {
     if (id) next.set('object', id);
     else next.delete('object');
     next.delete('ks2');
+    next.delete('from');
+    next.delete('to');
     setParams(next, { replace: true });
   };
 
@@ -80,6 +98,15 @@ export function KsPage() {
     const next = new URLSearchParams(params);
     if (id) next.set('ks2', id);
     else next.delete('ks2');
+    setParams(next, { replace: true });
+  };
+
+  const setRange = (from: string | null, to: string | null) => {
+    const next = new URLSearchParams(params);
+    if (from) next.set('from', from);
+    else next.delete('from');
+    if (to) next.set('to', to);
+    else next.delete('to');
     setParams(next, { replace: true });
   };
 
@@ -162,11 +189,17 @@ export function KsPage() {
           <SummaryStats grid={grid.data} />
           <Ks2Strip
             objectId={objectId}
+            objectCode={objects.data?.find((o) => o.id === objectId)?.code ?? ''}
             grid={grid.data}
             selectedKs2={selectedKs2}
             onSelect={setKs2}
             role={user!.role}
             hasUnsaved={unsavedCount > 0}
+            visibleCount={visiblePeriods.length}
+            range={[rangeFrom, rangeTo]}
+            onRangeChange={setRange}
+            vatView={vatView}
+            onVatViewChange={setVatView}
           />
           {unsavedCount > 0 && selectedDraft ? (
             <div className="dirty-bar">
@@ -226,11 +259,21 @@ export function KsPage() {
                   title="Выбранный КС-2 утверждён — колонка доступна только для чтения"
                 />
               ) : null}
+              {visiblePeriods.length === 0 && grid.data.periods.length > 0 ? (
+                <Alert
+                  type="info"
+                  showIcon
+                  style={{ marginBottom: 8 }}
+                  title="В выбранный период нет КС-2 — показаны только договорные колонки"
+                />
+              ) : null}
               <Ks6Table
                 grid={grid.data}
+                periods={visiblePeriods}
                 selectedDraftId={selectedDraft?.id ?? null}
                 editable={Boolean(selectedDraft)}
                 store={store}
+                vatView={vatView}
               />
             </div>
           )}

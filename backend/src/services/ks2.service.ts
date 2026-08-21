@@ -117,6 +117,44 @@ export async function setLines(
   return { saved, totalAmount: sumStrings(allLines.map((l) => l.amount)) };
 }
 
+/**
+ * Полная очистка КС-2 по договору — физическое удаление документов и строк выполнения.
+ * Нужна для перезаливки истории из исправленного Excel: soft delete оставил бы строки
+ * ks2_lines, которые блокируют удаление позиций сметы и не видны повторному импорту.
+ */
+export async function clearByContract(
+  db: Db,
+  contractId: string,
+  userId: string,
+): Promise<{ documents: number; lines: number }> {
+  // без фильтра по deletedAt — вычищаем и строки ранее soft-deleted документов
+  const docs = await db
+    .select({ id: ks2Documents.id, number: ks2Documents.number })
+    .from(ks2Documents)
+    .where(eq(ks2Documents.contractId, contractId));
+  if (docs.length === 0) return { documents: 0, lines: 0 };
+
+  const ids = docs.map((d) => d.id);
+  let lines = 0;
+  await db.transaction(async (tx) => {
+    const removed = await tx
+      .delete(ks2Lines)
+      .where(inArray(ks2Lines.ks2DocumentId, ids))
+      .returning({ id: ks2Lines.id });
+    lines = removed.length;
+    await tx.delete(ks2Documents).where(eq(ks2Documents.contractId, contractId));
+  });
+
+  await writeAudit(db, {
+    action: 'ks2.clear',
+    userId,
+    entityType: 'contract',
+    entityId: contractId,
+    details: { documents: docs.length, lines, numbers: docs.map((d) => d.number) },
+  });
+  return { documents: docs.length, lines };
+}
+
 export async function approve(db: Db, docId: string, userId: string) {
   const doc = await getDocOrThrow(db, docId);
   if (doc.status === 'approved') {

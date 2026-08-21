@@ -109,7 +109,7 @@ describe('ks6-parser (синтетическая книга)', () => {
     expect(nom!.kind).toBe('nomenclature');
     expect(nom!.kvrTmpId).toBe(kvr!.tmpId);
     expect(nom!.contractQty).toBe('10');
-    expect(nom!.unitPrice).toBe('30.00');
+    expect(nom!.unitPrice).toBe('30.000000');
     expect(nom!.contractTotal).toBe('300.00');
 
     // две значимых колонки: безымянная (13/14) и «КС-2 №1» (15/16); «Остаток» отрезан
@@ -125,6 +125,54 @@ describe('ks6-parser (синтетическая книга)', () => {
     expect(parsed.controls.contractTotal).toBe('300.00');
     expect(parsed.controls.executedTotal).toBe('120.00');
     expect(parsed.controls.vat).toBe('50.00');
+
+    // контрольная графа «Выполнение с нач.ст-ва» читается и по строке — по ней грид
+    // КС-6 сверяет импортированное выполнение с книгой
+    expect(nom!.fileExecutedTotal).toBe('120.00');
+    expect(kvr!.fileExecutedTotal).toBeNull();
+  });
+
+  it('под итогом только «НДС» — предупреждения об обрыве чтения нет', async () => {
+    const wb = await buildKs6Workbook();
+    const parsed = parseKs6(await grid(wb, 'КС-6'));
+    expect(parsed.warnings.filter((w) => w.includes('не читались'))).toEqual([]);
+  });
+
+  /**
+   * ЗИЛ: у строк есть явный «Вид», а суммы соседних позиций совпадают случайно
+   * (одинаковые расценки по корпусам). Эвристика агрегатов не должна их трогать,
+   * иначе головная строка уходит из суммы номенклатуры.
+   */
+  it('явный «Вид» сильнее совпадения сумм, черновые числа справа не дают предупреждений', async () => {
+    const wb = await buildKs6Workbook();
+    const ws = wb.getWorksheet('КС-6')!;
+    const set = (r: number, c: number, v: ExcelJS.CellValue) => (ws.getRow(r).getCell(c).value = v);
+    // «Корпус 1» = 100, ниже две позиции по 50 — сумма сходится, но все три помечены
+    // «Номенклатура». Строки идут до итога, поэтому итог переезжает ниже
+    for (const [row, name, total] of [
+      [15, 'Устройство стенки Корпус 1', 100],
+      [16, 'Устройство стенки Корпус 2', 50],
+      [17, 'Устройство стенки Корпус 3', 50],
+    ] as const) {
+      set(row, 3, 'Номенклатура');
+      set(row, 4, name);
+      set(row, 5, 'этаж');
+      set(row, 6, 2);
+      set(row, 7, total / 2);
+      set(row, 10, total);
+    }
+    set(18, 4, 'Итого, руб., в т.ч. НДС');
+    set(18, 10, 500);
+    set(19, 4, 'НДС 20%');
+    set(19, 10, 83);
+    // черновой расчёт автора книги далеко справа от таблицы
+    set(6, 40, 286954351.248);
+
+    const parsed = parseKs6(await grid(wb, 'КС-6'));
+    const corpus = parsed.items.filter((i) => i.name.startsWith('Устройство стенки'));
+    expect(corpus.map((i) => i.kind)).toEqual(['nomenclature', 'nomenclature', 'nomenclature']);
+    expect(parsed.warnings.filter((w) => w.includes('агрегирующая'))).toEqual([]);
+    expect(parsed.warnings.filter((w) => w.includes('не похожа на период'))).toEqual([]);
   });
 
   it('понятная ошибка, если на листе нет таблицы работ', async () => {

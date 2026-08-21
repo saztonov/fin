@@ -1,5 +1,6 @@
 import { InputNumber } from 'antd';
 import { useSyncExternalStore } from 'react';
+import { lineAmount, netFromGross } from '../../../shared/lib/money';
 import type { EditsStore } from './editsStore';
 
 interface Props {
@@ -62,17 +63,23 @@ export function EditedAmountText({
   store,
   itemId,
   savedAmount,
-  unitPrice,
+  unitPriceGross,
+  vatRate,
   render,
 }: {
   store: EditsStore;
   itemId: string;
   savedAmount: string;
-  unitPrice: string;
+  /** цена как в договоре (с НДС) — сервер считает стоимость именно от неё */
+  unitPriceGross: string;
+  /** ставка для режима «без НДС»; 0 — показываем сумму как есть */
+  vatRate: number;
   render: (amount: string) => React.ReactNode;
 }) {
   const edited = useSyncExternalStore(store.subscribe, () => store.get(itemId));
   if (edited === undefined) return <>{render(savedAmount)}</>;
-  const amount = (Number(edited) * Number(unitPrice)).toFixed(2);
-  return <>{render(amount)}</>;
+  // повторяем серверный порядок действий: сначала qty × цена с НДС до копеек, потом
+  // выделение НДС. Иначе после сохранения ячейка «прыгала» бы на копейку
+  const gross = lineAmount(edited, unitPriceGross);
+  return <>{render(vatRate ? netFromGross(gross, vatRate) : gross)}</>;
 }

@@ -48,8 +48,16 @@ export interface PeriodInfo {
   status: Ks2Status;
   source: 'manual' | 'import';
   importLabel: string | null;
+  /** сумма документа с НДС — независимо от режима отображения таблицы */
   totalAmount: string;
+  /** ставка на дату периода; 0 — договор без НДС */
+  vatRate: number;
+  vatAmount: string;
+  netAmount: string;
 }
+
+/** Режим отображения сумм на странице КС. */
+export type VatView = 'gross' | 'net';
 
 export interface PeriodCell {
   qty: string;
@@ -68,6 +76,8 @@ export interface GridItemRow {
   unit: string;
   contractQty: string;
   unitPrice: string;
+  /** цена как в договоре (с НДС) — для предпросмотра правки объёма */
+  unitPriceGross: string;
   materialUnitCost: string | null;
   workUnitCost: string | null;
   contractTotal: string;
@@ -79,6 +89,10 @@ export interface GridItemRow {
   remainderQty: string;
   remainderAmount: string;
   byPeriod: Record<string, PeriodCell>;
+  /** расхождения с исходным Excel; null — сверять не с чем либо сходится до копейки */
+  totalMismatch: string | null;
+  fileExecutedTotal: string | null;
+  executedMismatch: string | null;
 }
 
 export interface GridSectionRow {
@@ -107,12 +121,22 @@ export interface Ks6Grid {
     contractTotal: string;
     executedAmount: string;
     remainderAmount: string;
+    /** режим цен договора: gross — с НДС, net — договор без НДС */
     vatMode: 'gross' | 'net';
+    /** режим отображения, в котором посчитаны суммы выше */
+    vatView: VatView;
     vatContract: string;
     vatExecuted: string;
+    vatRateContract: number;
     byPeriod: Record<string, string>;
     catalogAmount: string;
     catalogMismatch: boolean;
+    /** контрольные суммы последнего применённого импорта и расхождения с ними */
+    fileContractTotal: string | null;
+    contractMismatch: string | null;
+    fileExecutedTotal: string | null;
+    executedMismatch: string | null;
+    fileTotalsSource: { fileName: string; appliedAt: string } | null;
   };
 }
 

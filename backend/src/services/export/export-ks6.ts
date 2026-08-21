@@ -9,6 +9,7 @@ import { sanitizeCellText } from './sanitize.js';
 
 const MONEY_FMT = '#,##0.00';
 const QTY_FMT = '#,##0.###';
+const PRICE_FMT = '#,##0.00####';
 
 const thin = { style: 'thin' as const, color: { argb: 'FFB0B0B0' } };
 const BORDER = { top: thin, left: thin, bottom: thin, right: thin };
@@ -257,6 +258,9 @@ export async function exportKs6(db: Db, objectId: string): Promise<{ buffer: Buf
       periods.some((_p, i) => pairCol(i) === c);
     ws.getColumn(c).numFmt = isQty ? QTY_FMT : MONEY_FMT;
   }
+  // расценки хранятся с 6 знаками — печатаем как есть, иначе выгрузка перестаёт
+  // сходиться с исходной ведомостью при обратной проверке qty × price
+  for (const c of [6, 7, 8]) ws.getColumn(c).numFmt = PRICE_FMT;
   ws.views = [{ state: 'frozen', xSplit: 4, ySplit: subRow }];
 
   const buffer = Buffer.from(await wb.xlsx.writeBuffer());

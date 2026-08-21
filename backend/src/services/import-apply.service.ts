@@ -2,6 +2,7 @@ import { and, asc, eq, isNull } from 'drizzle-orm';
 import type { Db } from '../db/client.js';
 import {
   amendments,
+  contracts,
   importFiles,
   importStaging,
   ks2Documents,
@@ -12,7 +13,7 @@ import {
 import { writeAudit } from '../lib/audit.js';
 import { ApiError } from '../lib/errors.js';
 import { dec, sumStrings } from '../lib/money.js';
-import type { ParsedImport, ParsedItem } from '../worker/parse-child/parsed-schema.js';
+import { TOTALS_EPS, type ParsedImport, type ParsedItem } from '../worker/parse-child/parsed-schema.js';
 
 function norm(s: string): string {
   return s.toLowerCase().replace(/\s+/g, ' ').trim();
@@ -194,22 +195,16 @@ export async function buildPreview(db: Db, importFileId: string): Promise<Import
   const computedExecutedTotal = sumStrings(
     parsed.ks2Columns.flatMap((c) => c.cells.map((cell) => cell.amount)),
   );
+  // расхождение с «Итого» файла сообщает сам парсер (оно уже в parsed.warnings) —
+  // здесь только сверка помесячных с контрольной колонкой «Выполнение с нач. ст-ва»
   const warnings = [...parsed.warnings];
   let executedMismatch: string | null = null;
   if (parsed.controls.executedTotal) {
     const diff = dec(computedExecutedTotal).sub(dec(parsed.controls.executedTotal));
-    if (!diff.isZero()) {
+    if (diff.abs().gt(TOTALS_EPS)) {
       executedMismatch = diff.toFixed(2);
       warnings.push(
         `Сумма помесячных выполнений (${computedExecutedTotal}) отличается от контрольной колонки файла «Выполнение с нач. ст-ва» (${parsed.controls.executedTotal}) на ${executedMismatch} руб. — внутренняя неувязка исходного Excel; источником истины приняты помесячные суммы`,
-      );
-    }
-  }
-  if (parsed.controls.contractTotal) {
-    const diff = dec(computedContractTotal).sub(dec(parsed.controls.contractTotal));
-    if (!diff.isZero()) {
-      warnings.push(
-        `Сумма номенклатур по договору (${computedContractTotal}) отличается от «Итого» файла (${parsed.controls.contractTotal}) на ${diff.toFixed(2)} руб.`,
       );
     }
   }
@@ -400,6 +395,7 @@ export async function applyImport(
                 materialUnitCost: s.materialUnitCost,
                 workUnitCost: s.workUnitCost,
                 contractTotal: s.contractTotal,
+                fileExecutedTotal: s.fileExecutedTotal,
                 updatedAt: new Date(),
               })
               .where(eq(workItems.id, ex.id));
@@ -431,6 +427,7 @@ export async function applyImport(
           materialUnitCost: s.materialUnitCost,
           workUnitCost: s.workUnitCost,
           contractTotal: s.contractTotal,
+          fileExecutedTotal: s.fileExecutedTotal,
           budgetArticle: s.budgetArticle,
           amendmentId: amendmentForNew,
           sortOrder: structureEmpty ? s.rowNumber * 10 : (sortCounter += 10),
@@ -517,6 +514,20 @@ export async function applyImport(
           result.linesCreated += 1;
         }
       }
+    }
+
+    // снимок контрольных сумм книги: по ним грид КС-6 показывает расхождение
+    // портала с исходным Excel уже после применения импорта
+    if (parsed.controls.contractTotal || parsed.controls.executedTotal) {
+      await tx
+        .update(contracts)
+        .set({
+          fileContractTotal: parsed.controls.contractTotal,
+          fileExecutedTotal: parsed.controls.executedTotal,
+          fileTotalsImportId: importFileId,
+          updatedAt: new Date(),
+        })
+        .where(eq(contracts.id, file.contractId));
     }
 
     await tx
