@@ -97,13 +97,13 @@ export function ObjectsTab() {
         >
           <Form.Item
             name="code"
-            label="Код (до 5 символов)"
+            label="Код (до 6 символов)"
             rules={[
               { required: true, whitespace: true, message: 'Укажите код' },
-              { max: 5, message: 'Не более 5 символов' },
+              { max: 6, message: 'Не более 6 символов' },
             ]}
           >
-            <Input maxLength={5} style={{ width: 140 }} autoFocus />
+            <Input maxLength={6} style={{ width: 140 }} autoFocus />
           </Form.Item>
           <Form.Item name="name" label="Название" rules={[{ required: true, message: 'Укажите название' }]}>
             <Input.TextArea autoSize={{ minRows: 2 }} />

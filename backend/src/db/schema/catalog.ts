@@ -13,7 +13,7 @@ export const constructionObjects = pgTable(
   'construction_objects',
   {
     id: uuid('id').primaryKey().defaultRandom(),
-    code: varchar('code', { length: 5 }).notNull(),
+    code: varchar('code', { length: 6 }).notNull(),
     name: text('name').notNull(),
     address: text('address').notNull().default(''),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),

@@ -11,7 +11,7 @@ const objectSchema = z.object({
     .string()
     .trim()
     .min(1, 'Укажите код объекта')
-    .max(5, 'Код объекта — не более 5 символов'),
+    .max(6, 'Код объекта — не более 6 символов'),
   name: z.string().trim().min(1, 'Укажите название').max(500),
   address: z.string().trim().max(1000).default(''),
 });
