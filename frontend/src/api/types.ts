@@ -15,42 +15,14 @@ export interface ConstructionObject {
   address: string;
 }
 
-/** Объект с цифрами договора — для карточек стартового экрана КС. */
+/** Объект с цифрами сметы — для карточек стартового экрана КС. */
 export interface ObjectSummary extends ConstructionObject {
-  hasContract: boolean;
-  contractNumber: string | null;
   contractTotal: string;
   executedAmount: string;
   remainderAmount: string;
   ks2Count: number;
   /** подпись версии сметы, если она разделена по ставкам НДС; иначе null */
   partTitle: string | null;
-  catalogAmount: string;
-  catalogMismatch: boolean;
-}
-
-export interface Contract {
-  id: string;
-  objectId: string;
-  number: string;
-  amount: string;
-  dateSigned: string | null;
-  zosDate: string | null;
-  customerName: string;
-  contractorName: string;
-  subject: string;
-  /** gross — цены в договоре с НДС, net — договор без НДС */
-  vatMode: 'gross' | 'net';
-}
-
-export interface Amendment {
-  id: string;
-  contractId: string;
-  number: string;
-  amount: string;
-  dateSigned: string | null;
-  zosExtensionDate: string | null;
-  note: string;
 }
 
 export type Ks2Status = 'draft' | 'approved';
@@ -66,7 +38,7 @@ export interface PeriodInfo {
   importLabel: string | null;
   /** сумма документа с НДС — независимо от режима отображения таблицы */
   totalAmount: string;
-  /** ставка на дату периода; 0 — договор без НДС */
+  /** ставка на дату периода */
   vatRate: number;
   vatAmount: string;
   netAmount: string;
@@ -92,13 +64,11 @@ export interface GridItemRow {
   unit: string;
   contractQty: string;
   unitPrice: string;
-  /** цена как в договоре (с НДС) — для предпросмотра правки объёма */
+  /** цена как в смете (с НДС) — для предпросмотра правки объёма */
   unitPriceGross: string;
   materialUnitCost: string | null;
   workUnitCost: string | null;
   contractTotal: string;
-  amendmentId: string | null;
-  amendmentNumber: string | null;
   sortOrder: number;
   executedQty: string;
   executedAmount: string;
@@ -118,8 +88,6 @@ export interface GridSectionRow {
   level: number;
   name: string;
   sortOrder: number;
-  amendmentId: string | null;
-  amendmentNumber: string | null;
   contractTotal: string;
   executedAmount: string;
   remainderAmount: string;
@@ -144,8 +112,6 @@ export interface PartInfo {
 }
 
 export interface Ks6Grid {
-  contract: Contract | null;
-  amendments: Amendment[];
   /** одна legacy — вкладки не показываются; vat20 + vat22 — показываются */
   availableParts: PartInfo[];
   activePart: PartInfo | null;
@@ -155,16 +121,12 @@ export interface Ks6Grid {
     contractTotal: string;
     executedAmount: string;
     remainderAmount: string;
-    /** режим цен договора: gross — с НДС, net — договор без НДС */
-    vatMode: 'gross' | 'net';
     /** режим отображения, в котором посчитаны суммы выше */
     vatView: VatView;
     vatContract: string;
     vatExecuted: string;
     vatRateContract: number;
     byPeriod: Record<string, string>;
-    catalogAmount: string;
-    catalogMismatch: boolean;
     /** контрольные суммы последнего применённого импорта и расхождения с ними */
     fileContractTotal: string | null;
     contractMismatch: string | null;
@@ -176,7 +138,7 @@ export interface Ks6Grid {
 
 export interface Ks2Document {
   id: string;
-  contractId: string;
+  partId: string;
   number: string;
   docDate: string | null;
   periodFrom: string | null;
@@ -273,12 +235,6 @@ export interface ImportPreview {
   /** часть сметы, в которую применится файл */
   partCode: PartCode;
   kind: 'psdc' | 'ks6';
-  header: {
-    contractNumber: string | null;
-    contractDate: string | null;
-    amendmentNumber: string | null;
-    amendmentDate: string | null;
-  };
   sections: { tmpId: string; name: string; level: number; exists: boolean }[];
   items: ItemDiff[];
   ks2Columns: Ks2ColumnDiff[];
@@ -293,7 +249,6 @@ export interface ImportPreview {
   };
   warnings: string[];
   structureEmpty: boolean;
-  amendmentRequired: boolean;
 }
 
 export interface ApplyResult {

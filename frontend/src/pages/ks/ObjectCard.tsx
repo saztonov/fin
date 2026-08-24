@@ -58,7 +58,7 @@ interface Props {
   onOpen: (id: string) => void;
 }
 
-/** Карточка объекта на стартовом экране КС: цифры договора вместо выпадающего списка. */
+/** Карточка объекта на стартовом экране КС: цифры сметы вместо выпадающего списка. */
 export function ObjectCard({ object: o, onOpen }: Props) {
   const { token } = theme.useToken();
   const negative = Number(o.remainderAmount) < 0;
@@ -90,7 +90,7 @@ export function ObjectCard({ object: o, onOpen }: Props) {
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', rowGap: 4, columnGap: 8 }}>
-        <Row label="Договор" value={o.contractTotal} />
+        <Row label="Смета" value={o.contractTotal} />
         <Row label="Выполнено" value={o.executedAmount} />
         <Row
           label="Остаток"
@@ -106,14 +106,6 @@ export function ObjectCard({ object: o, onOpen }: Props) {
         {o.partTitle ? (
           <Tooltip title="Смета разделена по ставкам НДС — на карточке цифры актуальной версии. Обе версии видны внутри объекта на вкладках.">
             <Tag color="blue">{o.partTitle}</Tag>
-          </Tooltip>
-        ) : null}
-        {!o.hasContract ? <Tag>Договор не заведён</Tag> : null}
-        {o.catalogMismatch ? (
-          <Tooltip
-            title={`По справочнику договора и ДС: ${fmtMoney(o.catalogAmount)} ₽, по строкам сметы: ${fmtMoney(o.contractTotal)} ₽`}
-          >
-            <Tag color="warning">не сходится со справочником</Tag>
           </Tooltip>
         ) : null}
       </Space>

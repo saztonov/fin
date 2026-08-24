@@ -7,10 +7,8 @@ import {
 import { api } from './client';
 import type {
   AdminUser,
-  Amendment,
   ApplyResult,
   ConstructionObject,
-  Contract,
   ImportFileInfo,
   ImportPreview,
   Ks2Document,
@@ -29,7 +27,7 @@ export function useObjects() {
   });
 }
 
-/** Объекты с суммой договора, выполнением и остатком — для карточек стартового экрана. */
+/** Объекты с суммой сметы, выполнением и остатком — для карточек стартового экрана. */
 export function useObjectsSummary() {
   return useQuery({
     queryKey: ['objects-summary'],
@@ -58,65 +56,6 @@ export function useDeleteObject() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['objects'] });
       qc.invalidateQueries({ queryKey: ['objects-summary'] });
-    },
-  });
-}
-
-// ---------- договор и ДС ----------
-
-export function useContract(objectId: string | null) {
-  return useQuery({
-    queryKey: ['contract', objectId],
-    queryFn: () =>
-      api<{ contract: Contract | null; amendments: Amendment[] }>(`/objects/${objectId}/contract`),
-    enabled: Boolean(objectId),
-  });
-}
-
-export function useSaveContract(objectId: string | null) {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (input: Partial<Contract>) =>
-      api<Contract>(`/objects/${objectId}/contract`, { method: 'PUT', body: input }),
-    onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: ['contract', objectId] });
-      void qc.invalidateQueries({ queryKey: ['ks6', objectId] });
-      void qc.invalidateQueries({ queryKey: ['objects-summary'] });
-    },
-  });
-}
-
-export function useSaveAmendment(objectId: string | null) {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (input: {
-      id?: string;
-      contractId: string;
-      number: string;
-      amount: string;
-      dateSigned?: string | null;
-      zosExtensionDate?: string | null;
-      note?: string;
-    }) =>
-      input.id
-        ? api<Amendment>(`/amendments/${input.id}`, { method: 'PATCH', body: input })
-        : api<Amendment>(`/contracts/${input.contractId}/amendments`, { body: input }),
-    onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: ['contract', objectId] });
-      void qc.invalidateQueries({ queryKey: ['ks6', objectId] });
-      void qc.invalidateQueries({ queryKey: ['objects-summary'] });
-    },
-  });
-}
-
-export function useDeleteAmendment(objectId: string | null) {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (id: string) => api(`/amendments/${id}`, { method: 'DELETE' }),
-    onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: ['contract', objectId] });
-      void qc.invalidateQueries({ queryKey: ['ks6', objectId] });
-      void qc.invalidateQueries({ queryKey: ['objects-summary'] });
     },
   });
 }
@@ -191,10 +130,7 @@ export function useClearKs2(objectId: string | null) {
   });
 }
 
-/**
- * Полная очистка сметы объекта (только admin): строки, разделы и вся история КС-2.
- * Гасим и договор, и сводку по объектам: после очистки меняются обе картины.
- */
+/** Полная очистка сметы объекта (только admin): строки, разделы и вся история КС-2. */
 export function useClearEstimate(objectId: string | null) {
   const qc = useQueryClient();
   return useMutation({
@@ -205,7 +141,6 @@ export function useClearEstimate(objectId: string | null) {
       ),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['ks6', objectId] });
-      qc.invalidateQueries({ queryKey: ['contract', objectId] });
       qc.invalidateQueries({ queryKey: ['objects-summary'] });
       qc.invalidateQueries({ queryKey: ['imports', objectId] });
     },
@@ -304,7 +239,6 @@ export function useImportPreview(importId: string | null, enabled: boolean) {
 
 export interface ApplyImportInput {
   importId: string;
-  amendmentId?: string | null;
   applyChanged: boolean;
   importHistory: boolean;
   overwriteKs2: boolean;

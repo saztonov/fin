@@ -3,7 +3,6 @@ import { Tag } from 'antd';
 type Status =
   | 'draft'
   | 'approved'
-  | 'ds'
   | 'new'
   | 'match'
   | 'changed'
@@ -14,7 +13,6 @@ type Status =
 const MAP: Record<Status, { color?: string; text: string; filled?: boolean }> = {
   draft: { color: 'gold', text: 'Черновик' },
   approved: { color: 'green', text: 'Утверждён', filled: true },
-  ds: { color: 'geekblue', text: 'ДС' },
   new: { color: 'green', text: 'новая' },
   match: { text: 'совпадает' },
   changed: { color: 'gold', text: 'изменена' },

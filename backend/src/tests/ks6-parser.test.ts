@@ -96,9 +96,6 @@ describe('ks6-parser (синтетическая книга)', () => {
     const wb = await buildKs6Workbook();
     const parsed = parseKs6(await grid(wb, 'КС-6'));
 
-    expect(parsed.header.contractNumber).toBe('Д-1/24');
-    expect(parsed.header.contractDate).toBe('2024-10-11');
-
     expect(parsed.sections.map((s) => [s.name, s.level])).toEqual([
       ['Работы ПОС', 1],
       ['Подземная часть', 2],

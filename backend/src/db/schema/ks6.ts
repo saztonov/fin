@@ -9,16 +9,12 @@ import {
   uuid,
   type AnyPgColumn,
 } from 'drizzle-orm/pg-core';
-import { amendments, contracts } from './catalog.js';
 import { estimateParts } from './parts.js';
 
 export const ks6Sections = pgTable(
   'ks6_sections',
   {
     id: uuid('id').primaryKey().defaultRandom(),
-    contractId: uuid('contract_id')
-      .notNull()
-      .references(() => contracts.id),
     /** часть сметы: legacy — единая смета, vat20/vat22 — версии по ставкам */
     partId: uuid('part_id')
       .notNull()
@@ -26,13 +22,12 @@ export const ks6Sections = pgTable(
     parentId: uuid('parent_id').references((): AnyPgColumn => ks6Sections.id),
     name: text('name').notNull(),
     sortOrder: integer('sort_order').notNull(),
-    amendmentId: uuid('amendment_id').references(() => amendments.id),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
     deletedAt: timestamp('deleted_at', { withTimezone: true }),
   },
   (t) => [
-    index('ks6_sections_contract_idx').on(t.contractId, t.sortOrder),
+    index('ks6_sections_part_sort_idx').on(t.partId, t.sortOrder),
     index('ks6_sections_part_idx').on(t.partId),
   ],
 );
@@ -41,9 +36,6 @@ export const workItems = pgTable(
   'work_items',
   {
     id: uuid('id').primaryKey().defaultRandom(),
-    contractId: uuid('contract_id')
-      .notNull()
-      .references(() => contracts.id),
     partId: uuid('part_id')
       .notNull()
       .references(() => estimateParts.id),
@@ -68,14 +60,13 @@ export const workItems = pgTable(
     fileExecutedTotal: numeric('file_executed_total', { precision: 18, scale: 2 }),
     budgetArticle: text('budget_article').notNull().default(''),
     note: text('note').notNull().default(''),
-    amendmentId: uuid('amendment_id').references(() => amendments.id),
     sortOrder: integer('sort_order').notNull(),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
     deletedAt: timestamp('deleted_at', { withTimezone: true }),
   },
   (t) => [
-    index('work_items_contract_idx').on(t.contractId, t.sortOrder),
+    index('work_items_part_sort_idx').on(t.partId, t.sortOrder),
     index('work_items_section_idx').on(t.sectionId),
     index('work_items_kvr_idx').on(t.kvrItemId),
     index('work_items_part_idx').on(t.partId),

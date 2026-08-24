@@ -11,7 +11,7 @@ interface Props {
   onOpen: (id: string) => void;
 }
 
-/** Стартовый экран КС: сетка карточек объектов с цифрами договора. */
+/** Стартовый экран КС: сетка карточек объектов с цифрами сметы. */
 export function ObjectPicker({ role, onOpen }: Props) {
   const objects = useObjectsSummary();
   const [search, setSearch] = useState('');

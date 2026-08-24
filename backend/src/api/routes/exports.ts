@@ -4,7 +4,7 @@ import { writeAudit } from '../../lib/audit.js';
 import * as ks2 from '../../services/ks2.service.js';
 import { exportKs2 } from '../../services/export/export-ks2.js';
 import { exportKs6 } from '../../services/export/export-ks6.js';
-import { assertContractAccess, assertObjectExists } from '../plugins/auth.js';
+import { assertObjectExists, assertPartAccess } from '../plugins/auth.js';
 
 const idParam = z.object({ id: z.string().uuid() });
 
@@ -41,7 +41,7 @@ export async function exportRoutes(app: FastifyInstance) {
   app.get('/ks2/:id/export.xlsx', { preHandler: [app.authenticate] }, async (req, reply) => {
     const { id } = idParam.parse(req.params);
     const doc = await ks2.getDocOrThrow(app.db, id);
-    await assertContractAccess(app.db, req.authUser, doc.contractId);
+    await assertPartAccess(app.db, req.authUser, doc.partId);
     const { buffer, filename } = await exportKs2(app.db, id);
     await writeAudit(app.db, {
       action: 'export.ks2',

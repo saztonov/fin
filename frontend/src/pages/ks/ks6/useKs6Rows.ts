@@ -13,7 +13,6 @@ export interface Ks6TableRow {
   kvrCode?: string;
   unit?: string;
   characteristic?: string;
-  amendmentNumber?: string | null;
   contractQty?: string;
   unitPrice?: string;
   unitPriceGross?: string;
@@ -61,7 +60,6 @@ export function useKs6Rows(grid: Ks6Grid | undefined, collapsed: Set<string>): K
           level: row.level,
           sectionId: row.id,
           name: row.name,
-          amendmentNumber: row.amendmentNumber,
           contractTotal: row.contractTotal,
           executedAmount: row.executedAmount,
           remainderAmount: row.remainderAmount,
@@ -91,7 +89,6 @@ export function useKs6Rows(grid: Ks6Grid | undefined, collapsed: Set<string>): K
         kvrCode: row.kvrCode,
         unit: row.unit,
         characteristic: row.characteristic,
-        amendmentNumber: row.amendmentNumber,
         contractQty: row.contractQty,
         unitPrice: row.unitPrice,
         unitPriceGross: row.unitPriceGross,
@@ -109,7 +106,7 @@ export function useKs6Rows(grid: Ks6Grid | undefined, collapsed: Set<string>): K
     }
 
     const { totals } = grid;
-    const netTitle = totals.vatMode === 'net' || totals.vatView === 'net';
+    const netTitle = totals.vatView === 'net';
     rows.push({
       key: '__grand_total__',
       rowType: 'grandTotal',

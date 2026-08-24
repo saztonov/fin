@@ -215,19 +215,7 @@ export function KsPage() {
               </Space>
             </div>
           ) : null}
-          {!grid.data.contract ? (
-            <Empty
-              image={Empty.PRESENTED_IMAGE_SIMPLE}
-              style={{ marginTop: 48 }}
-              description="По объекту не заведён договор"
-            >
-              {user?.role !== 'economist' ? (
-                <Link to="/refs?tab=contracts">
-                  <Button type="primary">Заполнить договор</Button>
-                </Link>
-              ) : null}
-            </Empty>
-          ) : grid.data.rows.length <= 1 ? (
+          {grid.data.rows.length <= 1 ? (
             <Empty
               image={Empty.PRESENTED_IMAGE_SIMPLE}
               style={{ marginTop: 48 }}

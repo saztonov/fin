@@ -70,7 +70,7 @@ export function EditedAmountText({
   store: EditsStore;
   itemId: string;
   savedAmount: string;
-  /** цена как в договоре (с НДС) — сервер считает стоимость именно от неё */
+  /** цена как в смете (с НДС) — сервер считает стоимость именно от неё */
   unitPriceGross: string;
   /** ставка для режима «без НДС»; 0 — показываем сумму как есть */
   vatRate: number;

@@ -19,7 +19,6 @@ import { Link, useSearchParams } from 'react-router-dom';
 import {
   useApplyImport,
   useApplyImportBatch,
-  useContract,
   useImportPreview,
   useImportStatus,
   useObjects,
@@ -52,7 +51,6 @@ export function ImportWizardPage() {
   const objectId = params.get('object');
 
   const objects = useObjects();
-  const contract = useContract(objectId);
   const upload = useUploadImport(objectId);
   const split = useSplitImport(objectId);
   const apply = useApplyImport(objectId);
@@ -105,22 +103,6 @@ export function ImportWizardPage() {
       />
     );
   }
-  if (contract.data && !contract.data.contract) {
-    return (
-      <Result
-        status="warning"
-        title="По объекту не заведён договор"
-        subTitle="Импорт привязывается к договору объекта. Сначала заполните договор в справочнике."
-        extra={
-          <Link to="/refs?tab=contracts">
-            <Button type="primary">Заполнить договор</Button>
-          </Link>
-        }
-      />
-    );
-  }
-
-  const contractIsNet = contract.data?.contract?.vatMode === 'net';
   const failed = firstStatus.data?.status === 'parse_failed' || secondStatus.data?.status === 'parse_failed';
 
   // в режиме двух страниц шаг «Разбор» держит нас, пока не выбран второй лист
@@ -128,19 +110,14 @@ export function ImportWizardPage() {
   const bothParsed = mode === 'single' ? firstParsed : firstParsed && secondParsed;
   const step = result ? 3 : bothParsed && !needSecondSheet ? 2 : firstId ? 1 : 0;
 
-  const firstReady = firstPreview.data
-    ? partReady(stateOf(firstId!), firstPreview.data.amendmentRequired)
-    : false;
-  const secondReady = secondPreview.data
-    ? partReady(stateOf(secondId!), secondPreview.data.amendmentRequired)
-    : false;
+  const firstReady = firstPreview.data ? partReady(stateOf(firstId!)) : false;
+  const secondReady = secondPreview.data ? partReady(stateOf(secondId!)) : false;
   const canApply = mode === 'single' ? firstReady : firstReady && secondReady;
 
   const applyInputFor = (id: string) => {
     const s = stateOf(id);
     return {
       importId: id,
-      amendmentId: s.amendmentId,
       applyChanged: s.applyChanged,
       importHistory: kind === 'ks6' && s.importHistory,
       overwriteKs2: s.overwriteKs2,
@@ -196,18 +173,15 @@ export function ImportWizardPage() {
             <Radio.Group
               value={mode}
               onChange={(e) => setMode(e.target.value as Mode)}
-              disabled={contractIsNet}
               options={[
                 { value: 'single', label: 'Одна страница КС' },
                 { value: 'split', label: 'Две страницы КС (НДС 20% и НДС 22%)' },
               ]}
             />
             <Typography.Text type="secondary">
-              {contractIsNet
-                ? 'Договор ведётся без НДС — разделение по ставкам к нему неприменимо.'
-                : mode === 'single'
-                  ? 'Одна таблица от начала объекта до конца.'
-                  : 'Первая таблица — по декабрь 2025 включительно (НДС 20%), вторая — с января 2026 (НДС 22%). Листы книги указываются после разбора; наборы строк у них могут отличаться.'}
+              {mode === 'single'
+                ? 'Одна таблица от начала объекта до конца.'
+                : 'Первая таблица — по декабрь 2025 включительно (НДС 20%), вторая — с января 2026 (НДС 22%). Листы книги указываются после разбора; наборы строк у них могут отличаться.'}
             </Typography.Text>
             <Upload.Dragger
               accept=".xlsx"
@@ -294,7 +268,6 @@ export function ImportWizardPage() {
                 importId={firstId!}
                 enabled={firstParsed}
                 isAdmin={user?.role === 'admin'}
-                amendments={contract.data?.amendments ?? []}
                 state={stateOf(firstId!)}
                 onChange={(s) => setStateOf(firstId!, s)}
               />
@@ -329,7 +302,6 @@ export function ImportWizardPage() {
                           importId={firstId!}
                           enabled={firstParsed}
                           isAdmin={user?.role === 'admin'}
-                          amendments={contract.data?.amendments ?? []}
                           state={stateOf(firstId!)}
                           onChange={(s) => setStateOf(firstId!, s)}
                         />
@@ -354,7 +326,6 @@ export function ImportWizardPage() {
                           importId={secondId!}
                           enabled={secondParsed}
                           isAdmin={user?.role === 'admin'}
-                          amendments={contract.data?.amendments ?? []}
                           state={stateOf(secondId!)}
                           onChange={(s) => setStateOf(secondId!, s)}
                         />
@@ -469,9 +440,9 @@ interface SheetPickerProps {
 }
 
 /**
- * В книгах заказчиков листов несколько (основной договор и ДС, две ставки НДС,
- * КС-2 рядом с накопительной ведомостью), поэтому выбранный лист показывается
- * явно и его можно переключить, не загружая файл заново.
+ * В книгах заказчиков листов несколько (две ставки НДС, КС-2 рядом с накопительной
+ * ведомостью), поэтому выбранный лист показывается явно и его можно переключить,
+ * не загружая файл заново.
  */
 function SheetPicker({ importId, objectId, usedSheet, candidates, vat }: SheetPickerProps) {
   const reparse = useReparseImport(objectId);

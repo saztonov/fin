@@ -1,8 +1,8 @@
 import crypto from 'node:crypto';
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { contracts, importFiles, importStaging } from '../../db/schema/index.js';
+import { importFiles, importStaging } from '../../db/schema/index.js';
 import { writeAudit } from '../../lib/audit.js';
 import { ApiError } from '../../lib/errors.js';
 import { enqueue } from '../../lib/jobs/queue.js';
@@ -16,7 +16,7 @@ import {
   type ApplyOptions,
 } from '../../services/import-apply.service.js';
 import { hasNonEmptyLegacy } from '../../services/parts.service.js';
-import { assertContractAccess, assertObjectExists } from '../plugins/auth.js';
+import { assertObjectAccess, assertObjectExists } from '../plugins/auth.js';
 
 const idParam = z.object({ id: z.string().uuid() });
 
@@ -28,7 +28,6 @@ const splitSchema = z.object({
 });
 
 const applySchema = z.object({
-  amendmentId: z.string().uuid().nullable().optional(),
   applyChanged: z.boolean().default(false),
   importHistory: z.boolean().default(true),
   overwriteKs2: z.boolean().default(false),
@@ -67,13 +66,6 @@ export async function importRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const { id } = idParam.parse(req.params);
       await assertObjectExists(app.db, req.authUser, id);
-      const [contract] = await app.db
-        .select({ id: contracts.id })
-        .from(contracts)
-        .where(and(eq(contracts.objectId, id), isNull(contracts.deletedAt)));
-      if (!contract) {
-        throw ApiError.badRequest('Сначала заведите договор по объекту', 'no_contract');
-      }
 
       const data = await req.file();
       if (!data) throw ApiError.badRequest('Файл не передан', 'no_file');
@@ -89,23 +81,11 @@ export async function importRoutes(app: FastifyInstance) {
         .default('legacy')
         .parse((data.fields.part as { value?: string } | undefined)?.value ?? undefined);
 
-      if (partCode !== 'legacy') {
-        const [c] = await app.db
-          .select({ vatMode: contracts.vatMode })
-          .from(contracts)
-          .where(eq(contracts.id, contract.id));
-        if (c?.vatMode === 'net') {
-          throw ApiError.badRequest(
-            'Договор ведётся без НДС — разделение сметы по ставкам к нему неприменимо',
-            'split_not_applicable',
-          );
-        }
-        if (await hasNonEmptyLegacy(app.db, contract.id)) {
-          throw ApiError.conflict(
-            'По объекту уже загружена единая смета. Смешивать её с версиями по ставкам нельзя: сначала выполните «Очистить смету»',
-            'legacy_estimate_exists',
-          );
-        }
+      if (partCode !== 'legacy' && (await hasNonEmptyLegacy(app.db, id))) {
+        throw ApiError.conflict(
+          'По объекту уже загружена единая смета. Смешивать её с версиями по ставкам нельзя: сначала выполните «Очистить смету»',
+          'legacy_estimate_exists',
+        );
       }
 
       const guarded = await guardXlsxUpload(data.file, data.filename);
@@ -114,13 +94,13 @@ export async function importRoutes(app: FastifyInstance) {
       }
 
       const storage = createLocalStorage();
-      const storageKey = `${contract.id}/${crypto.randomUUID()}.xlsx`;
+      const storageKey = `${id}/${crypto.randomUUID()}.xlsx`;
       await storage.save(storageKey, guarded.buffer);
 
       const [created] = await app.db
         .insert(importFiles)
         .values({
-          contractId: contract.id,
+          objectId: id,
           uploadedBy: req.authUser.id,
           kind,
           originalName: guarded.safeName,
@@ -162,14 +142,14 @@ export async function importRoutes(app: FastifyInstance) {
       const { id } = idParam.parse(req.params);
       const input = splitSchema.parse(req.body);
       const first = await getImportFile(app, id);
-      await assertContractAccess(app.db, req.authUser, first.contractId);
+      await assertObjectAccess(app.db, req.authUser, first.objectId);
       if (first.status === 'applied') {
         throw ApiError.conflict('Импорт уже применён', 'already_applied');
       }
       if (input.sheet === first.sheetName) {
         throw ApiError.badRequest('Обе страницы указывают на один лист книги', 'same_sheet');
       }
-      if (await hasNonEmptyLegacy(app.db, first.contractId)) {
+      if (await hasNonEmptyLegacy(app.db, first.objectId)) {
         throw ApiError.conflict(
           'По объекту уже загружена единая смета. Смешивать её с версиями по ставкам нельзя: сначала выполните «Очистить смету»',
           'legacy_estimate_exists',
@@ -203,7 +183,7 @@ export async function importRoutes(app: FastifyInstance) {
       const [created] = await app.db
         .insert(importFiles)
         .values({
-          contractId: first.contractId,
+          objectId: first.objectId,
           uploadedBy: req.authUser.id,
           kind: first.kind,
           originalName: first.originalName,
@@ -235,11 +215,6 @@ export async function importRoutes(app: FastifyInstance) {
     async (req) => {
       const { id } = idParam.parse(req.params);
       await assertObjectExists(app.db, req.authUser, id);
-      const [contract] = await app.db
-        .select({ id: contracts.id })
-        .from(contracts)
-        .where(and(eq(contracts.objectId, id), isNull(contracts.deletedAt)));
-      if (!contract) return [];
       return app.db
         .select({
           id: importFiles.id,
@@ -251,7 +226,7 @@ export async function importRoutes(app: FastifyInstance) {
           createdAt: importFiles.createdAt,
         })
         .from(importFiles)
-        .where(eq(importFiles.contractId, contract.id))
+        .where(eq(importFiles.objectId, id))
         .orderBy(importFiles.createdAt);
     },
   );
@@ -262,7 +237,7 @@ export async function importRoutes(app: FastifyInstance) {
     async (req) => {
       const { id } = idParam.parse(req.params);
       const file = await getImportFile(app, id);
-      await assertContractAccess(app.db, req.authUser, file.contractId);
+      await assertObjectAccess(app.db, req.authUser, file.objectId);
       const [staging] = await app.db
         .select({ summary: importStaging.summary })
         .from(importStaging)
@@ -277,7 +252,7 @@ export async function importRoutes(app: FastifyInstance) {
     async (req) => {
       const { id } = idParam.parse(req.params);
       const file = await getImportFile(app, id);
-      await assertContractAccess(app.db, req.authUser, file.contractId);
+      await assertObjectAccess(app.db, req.authUser, file.objectId);
       return buildPreview(app.db, id);
     },
   );
@@ -288,7 +263,7 @@ export async function importRoutes(app: FastifyInstance) {
     async (req) => {
       const { id } = idParam.parse(req.params);
       const file = await getImportFile(app, id);
-      await assertContractAccess(app.db, req.authUser, file.contractId);
+      await assertObjectAccess(app.db, req.authUser, file.objectId);
       const options = applySchema.parse(req.body ?? {});
       if (options.overwriteKs2 && req.authUser.role !== 'admin') {
         throw ApiError.forbidden('Перезапись существующих КС-2 доступна только администратору');
@@ -308,11 +283,11 @@ export async function importRoutes(app: FastifyInstance) {
       const { id: batchId } = idParam.parse(req.params);
       const input = batchApplySchema.parse(req.body ?? {});
       const files = await app.db
-        .select({ id: importFiles.id, contractId: importFiles.contractId })
+        .select({ id: importFiles.id, objectId: importFiles.objectId })
         .from(importFiles)
         .where(eq(importFiles.batchId, batchId));
       if (files.length === 0) throw ApiError.notFound('Пара файлов импорта не найдена');
-      await assertContractAccess(app.db, req.authUser, files[0]!.contractId);
+      await assertObjectAccess(app.db, req.authUser, files[0]!.objectId);
 
       const known = new Set(files.map((f) => f.id));
       const byImport = new Map<string, ApplyOptions>();
@@ -337,7 +312,7 @@ export async function importRoutes(app: FastifyInstance) {
     async (req) => {
       const { id } = idParam.parse(req.params);
       const file = await getImportFile(app, id);
-      await assertContractAccess(app.db, req.authUser, file.contractId);
+      await assertObjectAccess(app.db, req.authUser, file.objectId);
       if (file.status === 'applied') {
         throw ApiError.conflict('Импорт уже применён — перечитать нельзя', 'already_applied');
       }
@@ -364,7 +339,7 @@ export async function importRoutes(app: FastifyInstance) {
     async (req) => {
       const { id } = idParam.parse(req.params);
       const file = await getImportFile(app, id);
-      await assertContractAccess(app.db, req.authUser, file.contractId);
+      await assertObjectAccess(app.db, req.authUser, file.objectId);
       if (file.status === 'applied') {
         throw ApiError.conflict('Импорт уже применён — отклонить нельзя', 'already_applied');
       }
@@ -383,7 +358,7 @@ export async function importRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const { id } = idParam.parse(req.params);
       const file = await getImportFile(app, id);
-      await assertContractAccess(app.db, req.authUser, file.contractId);
+      await assertObjectAccess(app.db, req.authUser, file.objectId);
       const storage = createLocalStorage();
       const buffer = await storage.read(file.storageKey);
       const asciiName = file.originalName.replace(/[^\x20-\x7e]/g, '_');

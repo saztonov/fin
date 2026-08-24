@@ -8,16 +8,16 @@ import {
   uniqueIndex,
   uuid,
 } from 'drizzle-orm/pg-core';
-import { contracts } from './catalog.js';
+import { constructionObjects } from './catalog.js';
 import { users } from './users.js';
 
 export const importFiles = pgTable(
   'import_files',
   {
     id: uuid('id').primaryKey().defaultRandom(),
-    contractId: uuid('contract_id')
+    objectId: uuid('object_id')
       .notNull()
-      .references(() => contracts.id),
+      .references(() => constructionObjects.id),
     uploadedBy: uuid('uploaded_by')
       .notNull()
       .references(() => users.id),
@@ -44,7 +44,7 @@ export const importFiles = pgTable(
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
-    index('import_files_contract_idx').on(t.contractId, t.createdAt),
+    index('import_files_object_idx').on(t.objectId, t.createdAt),
     index('import_files_batch_idx').on(t.batchId),
   ],
 );

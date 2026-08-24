@@ -278,7 +278,6 @@ export function parseSheet(ws: SheetGrid, kind: 'psdc' | 'ks6'): ParsedImport {
     sheetName: ws.name,
     sheetCandidates: [],
     vat: detectVat(ws, layout),
-    header: readDocumentHeader(ws, layout),
     sections,
     items,
     ks2Columns,
@@ -370,72 +369,6 @@ function detectVat(ws: SheetGrid, layout: HeaderLayout): { rate: number | null; 
     }
   }
   return { rate, mode };
-}
-
-/** Реквизиты договора и ДС из шапки документа над таблицей. */
-function readDocumentHeader(
-  ws: SheetGrid,
-  layout: HeaderLayout,
-): ParsedImport['header'] {
-  let contractNumber: string | null = null;
-  let contractDate: string | null = null;
-  let amendmentNumber: string | null = null;
-  let amendmentDate: string | null = null;
-
-  const maxCol = Math.min(ws.columnCount, 30);
-  for (let r = 1; r < layout.headerRow; r++) {
-    for (let c = 1; c <= maxCol; c++) {
-      const t = cellText(ws, r, c);
-      if (!t) continue;
-      const norm = normHeader(t);
-      const isContract = norm.startsWith('договор');
-      const isAmendment = norm.startsWith('дополнительное соглашение') || norm.startsWith('дс ');
-      if (!isContract && !isAmendment) continue;
-
-      // «Договор подряда №05/2024-КС от 02.05.2024» одной строкой
-      const inline = /№\s*([^\s,]+)/.exec(t);
-      if (inline) {
-        if (isContract) contractNumber ??= inline[1]!;
-        else amendmentNumber ??= inline[1]!;
-      }
-      const inlineDate = parseRuDate(t);
-      if (inlineDate) {
-        if (isContract) contractDate ??= inlineDate;
-        else amendmentDate ??= inlineDate;
-      }
-
-      // разложенный вид: подписи «номер»/«дата» в соседних ячейках
-      for (let rr = r; rr <= Math.min(r + 2, layout.headerRow - 1); rr++) {
-        for (let cc = c; cc <= Math.min(c + 8, maxCol); cc++) {
-          const key = cellText(ws, rr, cc).toLowerCase();
-          if (key === 'номер') {
-            const val = cellText(ws, rr, cc + 1);
-            if (val) {
-              if (isContract) contractNumber ??= val;
-              else amendmentNumber ??= val;
-            }
-          } else if (key === 'дата') {
-            const val = cellDate(ws, rr, cc + 1) ?? readSplitDate(ws, rr, cc + 1);
-            if (val) {
-              if (isContract) contractDate ??= val;
-              else amendmentDate ??= val;
-            }
-          }
-        }
-      }
-    }
-  }
-  return { contractNumber, contractDate, amendmentNumber, amendmentDate };
-}
-
-/** Дата, разложенная по трём ячейкам: «26» «07» «2024» (Дом_56). */
-function readSplitDate(ws: SheetGrid, row: number, col: number): string | null {
-  const dd = cellText(ws, row, col);
-  const mm = cellText(ws, row, col + 1);
-  const yy = cellText(ws, row, col + 2);
-  if (!/^\d{1,2}$/.test(dd) || !/^\d{1,2}$/.test(mm) || !/^\d{4}$/.test(yy)) return null;
-  const iso = `${yy}-${mm.padStart(2, '0')}-${dd.padStart(2, '0')}`;
-  return Number.isNaN(Date.parse(iso)) ? null : iso;
 }
 
 export { isTotalRow };

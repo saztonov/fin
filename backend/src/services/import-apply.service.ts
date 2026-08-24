@@ -1,8 +1,6 @@
 import { and, asc, eq, isNull, sql } from 'drizzle-orm';
 import type { Db, Tx } from '../db/client.js';
 import {
-  amendments,
-  contracts,
   estimateParts,
   importFiles,
   importStaging,
@@ -13,12 +11,7 @@ import {
 } from '../db/schema/index.js';
 import { writeAudit } from '../lib/audit.js';
 import { ApiError } from '../lib/errors.js';
-import {
-  baseYearOfPart,
-  PART_TITLE,
-  periodFitsPart,
-  type PartCode,
-} from '../lib/estimate-parts.js';
+import { baseYearOfPart, periodFitsPart, type PartCode } from '../lib/estimate-parts.js';
 import { dec, sumStrings } from '../lib/money.js';
 import { ensurePart, findPart } from './parts.service.js';
 import { monthIndexOf } from '../worker/parse-child/header-dictionary.js';
@@ -61,7 +54,6 @@ export interface ImportPreview {
   /** часть сметы, в которую применится файл */
   partCode: PartCode;
   kind: 'psdc' | 'ks6';
-  header: ParsedImport['header'];
   sections: { tmpId: string; parentTmpId: string | null; name: string; level: number; exists: boolean }[];
   items: ItemDiff[];
   ks2Columns: Ks2ColumnDiff[];
@@ -73,7 +65,6 @@ export interface ImportPreview {
   };
   warnings: string[];
   structureEmpty: boolean;
-  amendmentRequired: boolean;
 }
 
 async function loadStaging(db: Db | Tx, importFileId: string) {
@@ -156,7 +147,7 @@ export async function buildPreview(db: Db, importFileId: string): Promise<Import
   const { file, parsed } = await loadStaging(db, importFileId);
 
   const partCode = fileePartCode(file);
-  const part = await findPart(db, file.contractId, partCode);
+  const part = await findPart(db, file.objectId, partCode);
   const { existingItems, existingSections, existingDocs } = await loadExistingForPart(
     db,
     part?.id ?? null,
@@ -246,14 +237,13 @@ export async function buildPreview(db: Db, importFileId: string): Promise<Import
     }
   }
 
-  // непустота считается по СВОЕЙ части: иначе второй лист книги всегда требовал бы
-  // ДС просто потому, что первый уже применён
+  // непустота считается по СВОЕЙ части: у второго листа книги свой набор строк,
+  // и «новыми» они должны считаться относительно него, а не первого листа
   const structureEmpty = existingItems.length === 0;
   return {
     importFileId,
     partCode,
     kind: parsed.kind,
-    header: parsed.header,
     sections,
     items,
     ks2Columns,
@@ -266,13 +256,10 @@ export async function buildPreview(db: Db, importFileId: string): Promise<Import
     },
     warnings,
     structureEmpty,
-    amendmentRequired: !structureEmpty && counts.new > 0,
   };
 }
 
 export interface ApplyOptions {
-  /** ДС, которым добавляются новые строки в непустой договор */
-  amendmentId?: string | null;
   /** применять изменения договорных значений по совпавшим строкам */
   applyChanged: boolean;
   /** импортировать историю помесячных выполнений (только kind=ks6) */
@@ -323,35 +310,14 @@ export async function applyImportTx(
     throw ApiError.conflict('Импорт уже применён', 'already_applied');
   }
 
-  // блокировка договора на время применения: та же, что берёт очистка сметы
-  await tx.execute(sql`select id from contracts where id = ${file.contractId} for update`);
+  // блокировка объекта на время применения: та же, что берёт очистка сметы
+  await tx.execute(sql`select id from construction_objects where id = ${file.objectId} for update`);
 
   const partCode = fileePartCode(file);
-  const part = await ensurePart(tx, file.contractId, partCode);
+  const part = await ensurePart(tx, file.objectId, partCode);
 
   const { existingItems, existingSections, existingDocs } = await loadExistingForPart(tx, part.id);
   const structureEmpty = existingItems.length === 0;
-
-  if (!structureEmpty && !options.amendmentId) {
-    // новые строки в непустую часть — только по ДС
-    const matchedPre = matchItems(parsed.items, existingItems);
-    const hasNew = parsed.items.some((s) => !matchedPre.get(s.tmpId));
-    if (hasNew) {
-      throw ApiError.badRequest(
-        `В части «${PART_TITLE[partCode]}» уже есть строки: для новых строк выберите дополнительное соглашение`,
-        'amendment_required',
-      );
-    }
-  }
-  if (options.amendmentId) {
-    const [am] = await tx
-      .select({ id: amendments.id, contractId: amendments.contractId })
-      .from(amendments)
-      .where(and(eq(amendments.id, options.amendmentId), isNull(amendments.deletedAt)));
-    if (!am || am.contractId !== file.contractId) {
-      throw ApiError.badRequest('ДС не найдено или относится к другому договору', 'bad_amendment');
-    }
-  }
 
   const periodOverrides = new Map(options.periods.map((p) => [p.index, p]));
 
@@ -402,7 +368,6 @@ export async function applyImportTx(
   }
 
   const matched = matchItems(parsed.items, existingItems);
-  const amendmentForNew = structureEmpty ? null : (options.amendmentId ?? null);
 
   const result: ApplyResult = {
     sectionsCreated: 0,
@@ -446,12 +411,10 @@ export async function applyImportTx(
         const [created] = await tx
           .insert(ks6Sections)
           .values({
-            contractId: file.contractId,
             partId: part.id,
             parentId,
             name: s.name,
             sortOrder: structureEmpty ? s.rowNumber * 10 : (sortCounter += 10),
-            amendmentId: amendmentForNew,
           })
           .returning({ id: ks6Sections.id });
         sectionIdByTmp.set(s.tmpId, created!.id);
@@ -496,7 +459,6 @@ export async function applyImportTx(
       const [created] = await tx
         .insert(workItems)
         .values({
-          contractId: file.contractId,
           partId: part.id,
           sectionId,
           kind: s.kind,
@@ -512,7 +474,6 @@ export async function applyImportTx(
           contractTotal: s.contractTotal,
           fileExecutedTotal: s.fileExecutedTotal,
           budgetArticle: s.budgetArticle,
-          amendmentId: amendmentForNew,
           sortOrder: structureEmpty ? s.rowNumber * 10 : (sortCounter += 10),
         })
         .returning({ id: workItems.id });
@@ -559,7 +520,6 @@ export async function applyImportTx(
           const [created] = await tx
             .insert(ks2Documents)
             .values({
-              contractId: file.contractId,
               partId: part.id,
               number,
               docDate: docDate ?? null,
@@ -601,7 +561,7 @@ export async function applyImportTx(
     }
 
     // Снимок контрольных сумм книги — на СВОЕЙ части: у листов 20 % и 22 % свои
-    // «Итого», и общий на договор снимок второй лист затирал бы первым.
+    // «Итого», и общий на объект снимок второй лист затирал бы первым.
     if (parsed.controls.contractTotal || parsed.controls.executedTotal) {
       await tx
         .update(estimateParts)

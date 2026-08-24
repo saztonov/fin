@@ -51,14 +51,7 @@ interface Props {
  * Сумма выбранного КС-2 в трёх видах. НДС выделяется по ставке на дату периода
  * (20 % до 31.12.2025, 22 % с 01.01.2026), поэтому у каждого документа она своя.
  */
-function Ks2Amounts({ p, vatMode }: { p: PeriodInfo; vatMode: 'gross' | 'net' }) {
-  if (vatMode === 'net') {
-    return (
-      <Typography.Text type="secondary">
-        КС-2 №{p.number}: <b className="num">{fmtMoney(p.totalAmount)} ₽</b> · НДС не облагается
-      </Typography.Text>
-    );
-  }
+function Ks2Amounts({ p }: { p: PeriodInfo }) {
   return (
     <Typography.Text type="secondary">
       КС-2 №{p.number}: <b className="num">{fmtMoney(p.totalAmount)} ₽</b> с НДС · НДС {p.vatRate}%{' '}
@@ -140,7 +133,7 @@ export function Ks2Strip({
         <div>
           <p style={{ marginTop: 0 }}>
             Будет удалено документов: <b>{grid.periods.length}</b> (в т.ч. утверждённых:{' '}
-            {approved}). Строки выполнения удаляются безвозвратно. Смета и договор сохранятся —
+            {approved}). Строки выполнения удаляются безвозвратно. Смета сохранится —
             после очистки историю можно загрузить заново из Excel.
           </p>
           <p style={{ marginBottom: 4 }}>
@@ -185,8 +178,8 @@ export function Ks2Strip({
             выполнения. Иначе смету удалить нельзя: строки выполнения ссылаются на строки сметы.
           </p>
           <p style={{ marginBottom: 12 }}>
-            Договор, доп. соглашения и журнал загруженных файлов сохранятся — после очистки
-            книгу можно загрузить заново с нуля.
+            Объект и журнал загруженных файлов сохранятся — после очистки книгу можно
+            загрузить заново с нуля.
           </p>
           <p style={{ marginBottom: 4 }}>
             Для подтверждения введите код объекта <b>{objectCode}</b>:
@@ -336,17 +329,14 @@ export function Ks2Strip({
           ) : null}
           <Tooltip
             title={
-              grid.totals.vatMode === 'net'
-                ? 'Договор ведётся без НДС — выделять нечего'
-                : grid.activePart?.vatRate
-                  ? `Пересчитывает все суммы таблицы по ставке вкладки — ${grid.activePart.vatRate}%`
-                  : 'Пересчитывает все суммы таблицы по ставке на дату периода'
+              grid.activePart?.vatRate
+                ? `Пересчитывает все суммы таблицы по ставке вкладки — ${grid.activePart.vatRate}%`
+                : 'Пересчитывает все суммы таблицы по ставке на дату периода'
             }
           >
             <Segmented
               size="small"
               value={vatView}
-              disabled={grid.totals.vatMode === 'net'}
               onChange={(v) => onVatViewChange(v as VatView)}
               options={[
                 { value: 'gross', label: 'с НДС' },
@@ -427,7 +417,7 @@ export function Ks2Strip({
         </div>
       </div>
 
-      {selected ? <Ks2Amounts p={selected} vatMode={grid.totals.vatMode} /> : null}
+      {selected ? <Ks2Amounts p={selected} /> : null}
 
       <Modal
         title="Новый КС-2"

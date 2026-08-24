@@ -96,9 +96,6 @@ export function useKs6Columns({
             >
               {row.collapsed ? <CaretRightOutlined /> : <CaretDownOutlined />}
               <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{row.name}</span>
-              {row.amendmentNumber ? (
-                <StatusTag status="ds" label={`ДС №${row.amendmentNumber}`} compact />
-              ) : null}
             </span>
           );
         }
@@ -110,21 +107,10 @@ export function useKs6Columns({
         return (
           <span className="ks6-name" style={{ paddingLeft: indent }}>
             <Tooltip title={title} mouseEnterDelay={0.5}>
-              <span
-                className="ks6-name"
-                style={{
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  borderLeft: row.amendmentNumber ? '2px solid var(--ks-color-primary, #2F54EB)' : undefined,
-                  paddingLeft: row.amendmentNumber ? 4 : undefined,
-                }}
-              >
+              <span className="ks6-name" style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>
                 {row.name}
               </span>
             </Tooltip>
-            {row.amendmentNumber ? (
-              <StatusTag status="ds" label={`ДС №${row.amendmentNumber}`} compact />
-            ) : null}
           </span>
         );
       },

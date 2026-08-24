@@ -1,6 +1,6 @@
 import { and, eq, inArray, isNull } from 'drizzle-orm';
 import type { Db } from '../db/client.js';
-import { ks2Documents, ks2Lines, workItems } from '../db/schema/index.js';
+import { estimateParts, ks2Documents, ks2Lines, workItems } from '../db/schema/index.js';
 import { writeAudit } from '../lib/audit.js';
 import { ApiError } from '../lib/errors.js';
 import { lineAmount, roundQty, sumStrings } from '../lib/money.js';
@@ -15,12 +15,11 @@ export async function getDocOrThrow(db: Db, docId: string) {
 }
 
 /**
- * Номер КС-2 уникален внутри ЧАСТИ, а не договора: у частей 20 % и 22 % свои
+ * Номер КС-2 уникален внутри ЧАСТИ, а не объекта: у частей 20 % и 22 % свои
  * сквозные нумерации, и КС-2 №1 законно существует в обеих.
  */
 export async function assertUniqueNumber(
   db: Db,
-  contractId: string,
   partId: string,
   number: string,
   exceptId?: string,
@@ -30,7 +29,6 @@ export async function assertUniqueNumber(
     .from(ks2Documents)
     .where(
       and(
-        eq(ks2Documents.contractId, contractId),
         eq(ks2Documents.partId, partId),
         eq(ks2Documents.number, number),
         isNull(ks2Documents.deletedAt),
@@ -48,7 +46,7 @@ export interface LineInput {
 
 /**
  * Bulk-сохранение строк выполнения черновика.
- * Стоимость = round2(qty × цена договора); qty=0 удаляет строку.
+ * Стоимость = round2(qty × цена сметы); qty=0 удаляет строку.
  */
 export async function setLines(
   db: Db,
@@ -67,7 +65,6 @@ export async function setLines(
     .select({
       id: workItems.id,
       kind: workItems.kind,
-      contractId: workItems.contractId,
       partId: workItems.partId,
       unitPrice: workItems.unitPrice,
     })
@@ -76,12 +73,12 @@ export async function setLines(
   const itemById = new Map(items.map((i) => [i.id, i]));
   for (const line of lines) {
     const item = itemById.get(line.workItemId);
-    if (!item || item.contractId !== doc.contractId) {
-      throw ApiError.badRequest('Строка работ не принадлежит договору', 'bad_work_item');
+    if (!item) {
+      throw ApiError.badRequest('Строка работ не найдена', 'bad_work_item');
     }
-    // совпадения договора мало: части 20 % и 22 % живут в одном договоре, и без
-    // этой проверки документ одной части принял бы строки другой (в БД это ловит
-    // составной FK, здесь — чтобы вернуть внятную ошибку, а не 500)
+    // части 20 % и 22 % живут в одном объекте, и без этой проверки документ одной
+    // части принял бы строки другой (в БД это ловит составной FK, здесь — чтобы
+    // вернуть внятную ошибку, а не 500)
     if (item.partId !== doc.partId) {
       throw ApiError.badRequest('Строка работ из другой части сметы', 'bad_work_item_part');
     }
@@ -132,20 +129,28 @@ export async function setLines(
 }
 
 /**
- * Полная очистка КС-2 по договору — физическое удаление документов и строк выполнения.
- * Нужна для перезаливки истории из исправленного Excel: soft delete оставил бы строки
- * ks2_lines, которые блокируют удаление позиций сметы и не видны повторному импорту.
+ * Полная очистка КС-2 по объекту — физическое удаление документов и строк выполнения
+ * во всех его частях. Нужна для перезаливки истории из исправленного Excel: soft delete
+ * оставил бы строки ks2_lines, которые блокируют удаление позиций сметы и не видны
+ * повторному импорту.
  */
-export async function clearByContract(
+export async function clearByObject(
   db: Db,
-  contractId: string,
+  objectId: string,
   userId: string,
 ): Promise<{ documents: number; lines: number }> {
+  const parts = await db
+    .select({ id: estimateParts.id })
+    .from(estimateParts)
+    .where(eq(estimateParts.objectId, objectId));
+  if (parts.length === 0) return { documents: 0, lines: 0 };
+  const partIds = parts.map((p) => p.id);
+
   // без фильтра по deletedAt — вычищаем и строки ранее soft-deleted документов
   const docs = await db
     .select({ id: ks2Documents.id, number: ks2Documents.number })
     .from(ks2Documents)
-    .where(eq(ks2Documents.contractId, contractId));
+    .where(inArray(ks2Documents.partId, partIds));
   if (docs.length === 0) return { documents: 0, lines: 0 };
 
   const ids = docs.map((d) => d.id);
@@ -153,14 +158,14 @@ export async function clearByContract(
   await db.transaction(async (tx) => {
     const removed = await tx.delete(ks2Lines).where(inArray(ks2Lines.ks2DocumentId, ids));
     lines = removed.rowCount ?? 0;
-    await tx.delete(ks2Documents).where(eq(ks2Documents.contractId, contractId));
+    await tx.delete(ks2Documents).where(inArray(ks2Documents.partId, partIds));
   });
 
   await writeAudit(db, {
     action: 'ks2.clear',
     userId,
-    entityType: 'contract',
-    entityId: contractId,
+    entityType: 'object',
+    entityId: objectId,
     details: { documents: docs.length, lines, numbers: docs.map((d) => d.number) },
   });
   return { documents: docs.length, lines };

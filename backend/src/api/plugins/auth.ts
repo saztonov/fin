@@ -4,7 +4,7 @@ import fp from 'fastify-plugin';
 import type { Db } from '../../db/client.js';
 import {
   constructionObjects,
-  contracts,
+  estimateParts,
   userObjectAssignments,
   type UserRole,
 } from '../../db/schema/index.js';
@@ -69,19 +69,23 @@ export async function assertObjectAccess(
   }
 }
 
-/** Доступ к объекту через договор (для маршрутов /contracts/:id, /ks2/:id и т.п.). */
-export async function assertContractAccess(
+/**
+ * Доступ к объекту через часть сметы — для маршрутов, где в URL приходит id
+ * документа или строки (/ks2/:id, /sections/:id, /work-items/:id): у всех них
+ * есть part_id, а часть однозначно указывает на свой объект.
+ */
+export async function assertPartAccess(
   db: Db,
   user: AuthUser,
-  contractId: string,
-): Promise<{ contractId: string; objectId: string }> {
+  partId: string,
+): Promise<{ partId: string; objectId: string }> {
   const [row] = await db
-    .select({ id: contracts.id, objectId: contracts.objectId })
-    .from(contracts)
-    .where(and(eq(contracts.id, contractId), isNull(contracts.deletedAt)));
-  if (!row) throw ApiError.notFound('Договор не найден');
+    .select({ id: estimateParts.id, objectId: estimateParts.objectId })
+    .from(estimateParts)
+    .where(eq(estimateParts.id, partId));
+  if (!row) throw ApiError.notFound('Часть сметы не найдена');
   await assertObjectAccess(db, user, row.objectId);
-  return { contractId: row.id, objectId: row.objectId };
+  return { partId: row.id, objectId: row.objectId };
 }
 
 /** Проверка существования объекта (+доступа). */

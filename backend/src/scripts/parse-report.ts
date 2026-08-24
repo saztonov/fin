@@ -42,10 +42,6 @@ async function reportFile(file: string, sheet?: string): Promise<void> {
     console.log(`  НДС из файла: ставка ${parsed.vat.rate ?? '—'}, режим ${parsed.vat.mode ?? '—'}`);
     console.log(`  Σ номенклатур: ${nomTotal}   «Итого» файла: ${parsed.controls.contractTotal ?? '—'}`);
     console.log(`  Σ по периодам: ${executed}   «Выполнено» файла: ${parsed.controls.executedTotal ?? '—'}`);
-    console.log(
-      `  договор: ${parsed.header.contractNumber ?? '—'} от ${parsed.header.contractDate ?? '—'}` +
-        `   ДС: ${parsed.header.amendmentNumber ?? '—'} от ${parsed.header.amendmentDate ?? '—'}`,
-    );
     if (parsed.warnings.length) {
       console.log(`  предупреждений: ${parsed.warnings.length}`);
       for (const w of parsed.warnings.slice(0, 5)) console.log(`    · ${w}`);

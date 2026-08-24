@@ -32,12 +32,12 @@ function toInfo(p: typeof estimateParts.$inferSelect): PartInfo {
   };
 }
 
-/** Все части договора в порядке вкладок. */
-export async function listParts(db: Db | Tx, contractId: string): Promise<PartInfo[]> {
+/** Все части сметы объекта в порядке вкладок. */
+export async function listParts(db: Db | Tx, objectId: string): Promise<PartInfo[]> {
   const rows = await db
     .select()
     .from(estimateParts)
-    .where(eq(estimateParts.contractId, contractId))
+    .where(eq(estimateParts.objectId, objectId))
     .orderBy(asc(estimateParts.sortOrder));
   return rows.map(toInfo);
 }
@@ -45,28 +45,28 @@ export async function listParts(db: Db | Tx, contractId: string): Promise<PartIn
 /** Часть по коду; null — если её ещё нет. */
 export async function findPart(
   db: Db | Tx,
-  contractId: string,
+  objectId: string,
   code: PartCode,
 ): Promise<PartInfo | null> {
   const [row] = await db
     .select()
     .from(estimateParts)
-    .where(and(eq(estimateParts.contractId, contractId), eq(estimateParts.code, code)));
+    .where(and(eq(estimateParts.objectId, objectId), eq(estimateParts.code, code)));
   return row ? toInfo(row) : null;
 }
 
 /** Часть по коду, создавая её при необходимости. */
 export async function ensurePart(
   db: Db | Tx,
-  contractId: string,
+  objectId: string,
   code: PartCode,
 ): Promise<PartInfo> {
-  const existing = await findPart(db, contractId, code);
+  const existing = await findPart(db, objectId, code);
   if (existing) return existing;
   const [created] = await db
     .insert(estimateParts)
     .values({
-      contractId,
+      objectId,
       code,
       vatRate: partRate(code)?.toFixed(2) ?? null,
       sortOrder: partSortOrder(code),
@@ -93,7 +93,7 @@ export function resolvePart(parts: PartInfo[], code: PartCode | undefined): Part
 
 /**
  * Есть ли в части хоть одна строка сметы. Нужно, чтобы не смешивать единую смету
- * с разделённой: legacy со строками и vat20/vat22 у одного договора несовместимы —
+ * с разделённой: legacy со строками и vat20/vat22 у одного объекта несовместимы —
  * иначе одни и те же работы будут посчитаны и там, и там.
  */
 export async function partHasItems(db: Db | Tx, partId: string): Promise<boolean> {
@@ -106,7 +106,7 @@ export async function partHasItems(db: Db | Tx, partId: string): Promise<boolean
 }
 
 /** Непустая legacy-смета блокирует переход на две страницы. */
-export async function hasNonEmptyLegacy(db: Db | Tx, contractId: string): Promise<boolean> {
-  const legacy = await findPart(db, contractId, 'legacy');
+export async function hasNonEmptyLegacy(db: Db | Tx, objectId: string): Promise<boolean> {
+  const legacy = await findPart(db, objectId, 'legacy');
   return legacy ? partHasItems(db, legacy.id) : false;
 }

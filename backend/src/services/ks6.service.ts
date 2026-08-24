@@ -1,8 +1,6 @@
 import { and, asc, eq, inArray, isNull } from 'drizzle-orm';
 import type { Db } from '../db/client.js';
 import {
-  amendments,
-  contracts,
   importFiles,
   ks2Documents,
   ks2Lines,
@@ -23,7 +21,7 @@ import {
 } from '../lib/money.js';
 import { listParts, resolvePart, type PartInfo } from './parts.service.js';
 
-/** Режим отображения сумм: gross — как в договоре (с НДС), net — без НДС. */
+/** Режим отображения сумм: gross — как в смете (с НДС), net — без НДС. */
 export type VatView = 'gross' | 'net';
 
 export interface PeriodInfo {
@@ -37,7 +35,7 @@ export interface PeriodInfo {
   importLabel: string | null;
   /** сумма документа с НДС — независимо от режима отображения таблицы */
   totalAmount: string;
-  /** ставка на дату периода: 20% до 31.12.2025, 22% с 01.01.2026; 0 — договор без НДС */
+  /** ставка на дату периода: 20% до 31.12.2025, 22% с 01.01.2026 */
   vatRate: number;
   vatAmount: string;
   netAmount: string;
@@ -60,13 +58,11 @@ export interface GridItemRow {
   unit: string;
   contractQty: string;
   unitPrice: string;
-  /** цена как в договоре (с НДС) — по ней грид считает предпросмотр правки объёма */
+  /** цена как в смете (с НДС) — по ней грид считает предпросмотр правки объёма */
   unitPriceGross: string;
   materialUnitCost: string | null;
   workUnitCost: string | null;
   contractTotal: string;
-  amendmentId: string | null;
-  amendmentNumber: string | null;
   sortOrder: number;
   executedQty: string;
   executedAmount: string;
@@ -89,8 +85,6 @@ export interface GridSectionRow {
   level: number;
   name: string;
   sortOrder: number;
-  amendmentId: string | null;
-  amendmentNumber: string | null;
   contractTotal: string;
   executedAmount: string;
   remainderAmount: string;
@@ -100,8 +94,6 @@ export interface GridSectionRow {
 export type GridRow = GridSectionRow | GridItemRow;
 
 export interface Ks6Grid {
-  contract: typeof contracts.$inferSelect | null;
-  amendments: (typeof amendments.$inferSelect)[];
   /** вкладки: одна legacy — вкладки не показываются, vat20+vat22 — показываются */
   availableParts: PartInfo[];
   activePart: PartInfo | null;
@@ -111,17 +103,13 @@ export interface Ks6Grid {
     contractTotal: string;
     executedAmount: string;
     remainderAmount: string;
-    /** режим цен договора: gross — с НДС, net — без НДС */
-    vatMode: 'gross' | 'net';
     /** режим отображения, в котором посчитаны суммы выше */
     vatView: VatView;
     vatContract: string;
     vatExecuted: string;
-    /** ставка на дату договора; по периодам ставка своя — см. PeriodInfo.vatRate */
+    /** ставка договорных колонок; по периодам ставка своя — см. PeriodInfo.vatRate */
     vatRateContract: number;
     byPeriod: Record<string, string>;
-    catalogAmount: string;
-    catalogMismatch: boolean;
     /** контрольные суммы последнего применённого импорта и расхождения с ними */
     fileContractTotal: string | null;
     contractMismatch: string | null;
@@ -138,22 +126,21 @@ function mismatch(actual: string, control: string | null): string | null {
   return diff.isZero() ? null : diff.toFixed(2);
 }
 
-/** Полный грид КС-6 по договору: строки, помесячные колонки, агрегаты, итоги. */
+/** Полный грид КС-6 по объекту: строки, помесячные колонки, агрегаты, итоги. */
 export async function getKs6Grid(
   db: Db,
   objectId: string,
   opts: { vatView?: VatView; part?: PartCode } = {},
 ): Promise<Ks6Grid> {
   const vatView: VatView = opts.vatView ?? 'gross';
-  const [contract] = await db
-    .select()
-    .from(contracts)
-    .where(and(eq(contracts.objectId, objectId), isNull(contracts.deletedAt)));
-  if (!contract) {
+
+  // грид всегда показывает ОДНУ часть: части 20 % и 22 % — перекрывающиеся версии
+  // одной сметы, и сложить их значило бы задвоить смету
+  const availableParts = await listParts(db, objectId);
+  const activePart = resolvePart(availableParts, opts.part);
+  if (!activePart) {
     return {
-      contract: null,
-      amendments: [],
-      availableParts: [],
+      availableParts,
       activePart: null,
       periods: [],
       rows: [],
@@ -161,14 +148,11 @@ export async function getKs6Grid(
         contractTotal: '0.00',
         executedAmount: '0.00',
         remainderAmount: '0.00',
-        vatMode: 'gross',
         vatView,
         vatContract: '0.00',
         vatExecuted: '0.00',
         vatRateContract: vatRateOn(null),
         byPeriod: {},
-        catalogAmount: '0.00',
-        catalogMismatch: false,
         fileContractTotal: null,
         contractMismatch: null,
         fileExecutedTotal: null,
@@ -178,40 +162,22 @@ export async function getKs6Grid(
     };
   }
 
-  // грид всегда показывает ОДНУ часть: части 20 % и 22 % — перекрывающиеся версии
-  // одной сметы, и сложить их значило бы задвоить договор
-  const availableParts = await listParts(db, contract.id);
-  const activePart = resolvePart(availableParts, opts.part);
-
-  const [amendmentRows, sectionRows, itemRows, docRows] = await Promise.all([
+  const [sectionRows, itemRows, docRows] = await Promise.all([
     db
       .select()
-      .from(amendments)
-      .where(and(eq(amendments.contractId, contract.id), isNull(amendments.deletedAt)))
-      .orderBy(asc(amendments.createdAt)),
-    activePart
-      ? db
-          .select()
-          .from(ks6Sections)
-          .where(and(eq(ks6Sections.partId, activePart.id), isNull(ks6Sections.deletedAt)))
-          .orderBy(asc(ks6Sections.sortOrder))
-      : [],
-    activePart
-      ? db
-          .select()
-          .from(workItems)
-          .where(and(eq(workItems.partId, activePart.id), isNull(workItems.deletedAt)))
-          .orderBy(asc(workItems.sortOrder))
-      : [],
-    activePart
-      ? db
-          .select()
-          .from(ks2Documents)
-          .where(and(eq(ks2Documents.partId, activePart.id), isNull(ks2Documents.deletedAt)))
-      : [],
+      .from(ks6Sections)
+      .where(and(eq(ks6Sections.partId, activePart.id), isNull(ks6Sections.deletedAt)))
+      .orderBy(asc(ks6Sections.sortOrder)),
+    db
+      .select()
+      .from(workItems)
+      .where(and(eq(workItems.partId, activePart.id), isNull(workItems.deletedAt)))
+      .orderBy(asc(workItems.sortOrder)),
+    db
+      .select()
+      .from(ks2Documents)
+      .where(and(eq(ks2Documents.partId, activePart.id), isNull(ks2Documents.deletedAt))),
   ]);
-
-  const amendmentNumberById = new Map(amendmentRows.map((a) => [a.id, a.number]));
 
   // сортировка периодов: по period_from (null — в конец), затем по дате создания
   const docs = [...docRows].sort((a, b) => {
@@ -251,25 +217,21 @@ export async function getKs6Grid(
   const importedIds = new Set(docs.filter((d) => d.source === 'import').map((d) => d.id));
 
   // Режим «без НДС»: суммы выделяются по ставке. У части со ставкой (vat20/vat22)
-  // она своя и от дат не зависит — договор мог быть подписан в 2023 году, но часть
-  // 22 % считается по 22 %. У legacy ставка прежняя: по дате ДС/договора для
-  // договорных значений и по дате периода для выполнения.
-  // Договор с vat_mode='net' уже нетто.
-  const netContract = contract.vatMode === 'net';
-  const toNet = vatView === 'net' && !netContract;
-  const partVatRate = activePart?.vatRate ?? null;
-  const amendmentDateById = new Map(amendmentRows.map((a) => [a.id, a.dateSigned]));
-  const contractRateOf = (amendmentId: string | null): number =>
-    partVatRate ??
-    vatRateOn((amendmentId ? amendmentDateById.get(amendmentId) : null) ?? contract.dateSigned);
+  // она своя и от дат не зависит: часть 22 % считается по 22 %, когда бы смета ни
+  // заводилась. У legacy ставку задаёт дата — по периоду для выполнения, а для
+  // договорных колонок периода нет, поэтому берётся действующая на сегодня
+  // (vatRateOn(null)): смета — это то, что ещё предстоит выполнить.
+  const toNet = vatView === 'net';
+  const partVatRate = activePart.vatRate ?? null;
+  const contractRate = partVatRate ?? vatRateOn(null);
   const docRateById = new Map(
     docs.map((d) => [d.id, partVatRate ?? vatRateOn(d.periodFrom ?? d.docDate)]),
   );
 
-  const showContract = (amount: string, amendmentId: string | null): string =>
-    toNet ? netFromGrossRate(amount, contractRateOf(amendmentId)) : amount;
-  const showPrice = (price: string, amendmentId: string | null): string =>
-    toNet ? netPriceFromGrossRate(price, contractRateOf(amendmentId)) : price;
+  const showContract = (amount: string): string =>
+    toNet ? netFromGrossRate(amount, contractRate) : amount;
+  const showPrice = (price: string): string =>
+    toNet ? netPriceFromGrossRate(price, contractRate) : price;
   const showCell = (amount: string, docId: string): string =>
     toNet ? netFromGrossRate(amount, docRateById.get(docId) ?? 0) : amount;
 
@@ -296,7 +258,7 @@ export async function getKs6Grid(
       }
     }
     importedGrossByItem.set(it.id, importedGross.toFixed(2));
-    const contractTotal = showContract(it.contractTotal, it.amendmentId);
+    const contractTotal = showContract(it.contractTotal);
     itemGrid.set(it.id, {
       type: 'item',
       id: it.id,
@@ -308,13 +270,11 @@ export async function getKs6Grid(
       characteristic: it.characteristic,
       unit: it.unit,
       contractQty: it.contractQty,
-      unitPrice: showPrice(it.unitPrice, it.amendmentId),
+      unitPrice: showPrice(it.unitPrice),
       unitPriceGross: it.unitPrice,
-      materialUnitCost: it.materialUnitCost && showPrice(it.materialUnitCost, it.amendmentId),
-      workUnitCost: it.workUnitCost && showPrice(it.workUnitCost, it.amendmentId),
+      materialUnitCost: it.materialUnitCost && showPrice(it.materialUnitCost),
+      workUnitCost: it.workUnitCost && showPrice(it.workUnitCost),
       contractTotal,
-      amendmentId: it.amendmentId,
-      amendmentNumber: it.amendmentId ? (amendmentNumberById.get(it.amendmentId) ?? null) : null,
       sortOrder: it.sortOrder,
       executedQty: execQty.toFixed(6),
       executedAmount: execAmount.toFixed(2),
@@ -415,8 +375,6 @@ export async function getKs6Grid(
       level: levelOf(s.id),
       name: s.name,
       sortOrder: s.sortOrder,
-      amendmentId: s.amendmentId,
-      amendmentNumber: s.amendmentId ? (amendmentNumberById.get(s.amendmentId) ?? null) : null,
       contractTotal: (a?.contractTotal ?? dec(0)).toFixed(2),
       executedAmount: (a?.executed ?? dec(0)).toFixed(2),
       remainderAmount: (a?.contractTotal ?? dec(0)).sub(a?.executed ?? dec(0)).toFixed(2),
@@ -424,7 +382,7 @@ export async function getKs6Grid(
     };
   });
 
-  // порядок строк: сквозной sort_order по договору
+  // порядок строк: сквозной sort_order по части сметы
   const rows: GridRow[] = [...sectionGrid, ...itemGrid.values()].sort(
     (a, b) => a.sortOrder - b.sortOrder,
   );
@@ -448,9 +406,9 @@ export async function getKs6Grid(
   }
 
   // Ставка документа — ставка части, а у legacy по дате периода (20 % до 31.12.2025,
-  // 22 % с 01.01.2026). Договор без НДС (vat_mode = 'net') выделять нечего.
+  // 22 % с 01.01.2026).
   const rateOfDoc = (d: (typeof docs)[number]) =>
-    netContract ? 0 : (docRateById.get(d.id) ?? vatRateOn(d.periodFrom ?? d.docDate ?? null));
+    docRateById.get(d.id) ?? vatRateOn(d.periodFrom ?? d.docDate ?? null);
 
   const periods: PeriodInfo[] = docs.map((d) => {
     const gross = byPeriodGross[d.id] ?? '0.00';
@@ -471,22 +429,16 @@ export async function getKs6Grid(
     };
   });
 
-  const catalogAmount = add(contract.amount, ...amendmentRows.map((a) => a.amount));
-
   // НДС итогов — сумма построчных, а не выделение от итога: только так «без НДС»
   // по строкам складывается в «без НДС» по документу до копейки
-  const vatContract = netContract
-    ? '0.00'
-    : sumStrings(
-        nomSource.map((it) => vatFromGrossRate(it.contractTotal, contractRateOf(it.amendmentId))),
-      );
-  const vatExecuted = netContract
-    ? '0.00'
-    : sumStrings(
-        docs
-          .filter((d) => approvedIds.has(d.id))
-          .map((d) => vatFromGrossRate(byPeriodGross[d.id] ?? '0', rateOfDoc(d))),
-      );
+  const vatContract = sumStrings(
+    nomSource.map((it) => vatFromGrossRate(it.contractTotal, contractRate)),
+  );
+  const vatExecuted = sumStrings(
+    docs
+      .filter((d) => approvedIds.has(d.id))
+      .map((d) => vatFromGrossRate(byPeriodGross[d.id] ?? '0', rateOfDoc(d))),
+  );
 
   // сверка с контрольными суммами последнего применённого импорта — своими у части
   const contractTotalGross = toNet
@@ -495,21 +447,14 @@ export async function getKs6Grid(
   const importedExecutedGross = sumStrings(
     nomSource.map((it) => importedGrossByItem.get(it.id)),
   );
-  const [fileImport] = activePart?.fileTotalsImportId
+  const [fileImport] = activePart.fileTotalsImportId
     ? await db
         .select({ originalName: importFiles.originalName, updatedAt: importFiles.updatedAt })
         .from(importFiles)
         .where(eq(importFiles.id, activePart.fileTotalsImportId))
     : [];
 
-  // Справочник договора описывает объект целиком, а вкладка — одну версию сметы:
-  // сравнивать их при разделённой смете бессмысленно, расхождение части с её
-  // листом показывает contractMismatch.
-  const splitEstimate = availableParts.some((p) => p.code !== 'legacy');
-
   return {
-    contract,
-    amendments: amendmentRows,
     availableParts,
     activePart,
     periods,
@@ -518,24 +463,18 @@ export async function getKs6Grid(
       contractTotal,
       executedAmount,
       remainderAmount: dec(contractTotal).sub(dec(executedAmount)).toFixed(2),
-      vatMode: contract.vatMode,
       vatView,
       vatContract,
       vatExecuted,
-      vatRateContract: netContract ? 0 : (partVatRate ?? vatRateOn(contract.dateSigned)),
+      vatRateContract: contractRate,
       byPeriod: byPeriodTotals,
-      catalogAmount,
-      catalogMismatch:
-        !splitEstimate &&
-        !dec(catalogAmount).isZero() &&
-        !dec(catalogAmount).eq(dec(contractTotalGross)),
-      fileContractTotal: activePart?.fileContractTotal ?? null,
-      contractMismatch: mismatch(contractTotalGross, activePart?.fileContractTotal ?? null),
-      fileExecutedTotal: activePart?.fileExecutedTotal ?? null,
+      fileContractTotal: activePart.fileContractTotal,
+      contractMismatch: mismatch(contractTotalGross, activePart.fileContractTotal),
+      fileExecutedTotal: activePart.fileExecutedTotal,
       executedMismatch:
         importedIds.size === 0
           ? null
-          : mismatch(importedExecutedGross, activePart?.fileExecutedTotal ?? null),
+          : mismatch(importedExecutedGross, activePart.fileExecutedTotal),
       fileTotalsSource: fileImport
         ? { fileName: fileImport.originalName, appliedAt: fileImport.updatedAt.toISOString() }
         : null,

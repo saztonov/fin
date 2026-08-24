@@ -82,7 +82,7 @@ export function vatRateOn(isoDate?: string | null): number {
  * НДС, выделенный из суммы с НДС: amount × rate / (100 + rate).
  *
  * Ставка передаётся явно. У части сметы (vat20/vat22) она своя и от даты не
- * зависит: договор мог быть подписан в 2023 году, но часть 22 % считается по 22 %.
+ * зависит: смета могла заводиться в 2023 году, но часть 22 % считается по 22 %.
  */
 export function vatFromGrossRate(amount: Num, rate: number): string {
   if (!rate) return '0.00';
@@ -110,7 +110,6 @@ export function netPriceFromGrossRate(price: Num, rate: number): string {
 /**
  * Те же расчёты со ставкой по дате: до 31.12.2025 — 20%, с 01.01.2026 — 22%.
  * Используются для части `legacy`, где смета не разделена по ставкам.
- * Для договоров без НДС (vat_mode = 'net') выделять нечего — вызывать не нужно.
  */
 export function vatFromGross(amount: Num, onDate?: string | null): string {
   return vatFromGrossRate(amount, vatRateOn(onDate));

@@ -9,7 +9,6 @@ import {
   uniqueIndex,
   uuid,
 } from 'drizzle-orm/pg-core';
-import { contracts } from './catalog.js';
 import { workItems } from './ks6.js';
 import { estimateParts } from './parts.js';
 import { users } from './users.js';
@@ -18,9 +17,6 @@ export const ks2Documents = pgTable(
   'ks2_documents',
   {
     id: uuid('id').primaryKey().defaultRandom(),
-    contractId: uuid('contract_id')
-      .notNull()
-      .references(() => contracts.id),
     /** часть сметы, к которой относится документ: у частей своя нумерация КС-2 */
     partId: uuid('part_id')
       .notNull()
@@ -40,8 +36,8 @@ export const ks2Documents = pgTable(
     deletedAt: timestamp('deleted_at', { withTimezone: true }),
   },
   (t) => [
-    uniqueIndex('ks2_documents_number_uq').on(t.contractId, t.partId, t.number),
-    index('ks2_documents_period_idx').on(t.contractId, t.periodFrom),
+    uniqueIndex('ks2_documents_number_uq').on(t.partId, t.number),
+    index('ks2_documents_period_idx').on(t.partId, t.periodFrom),
     index('ks2_documents_part_idx').on(t.partId),
     unique('ks2_documents_id_part_uq').on(t.id, t.partId),
   ],

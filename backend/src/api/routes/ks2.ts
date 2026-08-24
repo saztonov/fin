@@ -1,14 +1,14 @@
 import { and, eq, isNull } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { contracts, estimateParts, ks2Documents, ks2Lines } from '../../db/schema/index.js';
+import { estimateParts, ks2Documents, ks2Lines } from '../../db/schema/index.js';
 import { writeAudit } from '../../lib/audit.js';
 import { ApiError } from '../../lib/errors.js';
 import { assertPeriodFitsPart } from '../../lib/estimate-parts.js';
 import { sumStrings } from '../../lib/money.js';
 import * as ks2 from '../../services/ks2.service.js';
 import { ensurePart, listParts, resolvePart } from '../../services/parts.service.js';
-import { assertContractAccess, assertObjectExists } from '../plugins/auth.js';
+import { assertObjectExists, assertPartAccess } from '../plugins/auth.js';
 
 const idParam = z.object({ id: z.string().uuid() });
 
@@ -46,12 +46,7 @@ export async function ks2Routes(app: FastifyInstance) {
     const { id } = idParam.parse(req.params);
     const { part } = partQuery.parse(req.query);
     await assertObjectExists(app.db, req.authUser, id);
-    const [contract] = await app.db
-      .select({ id: contracts.id })
-      .from(contracts)
-      .where(and(eq(contracts.objectId, id), isNull(contracts.deletedAt)));
-    if (!contract) return [];
-    const active = resolvePart(await listParts(app.db, contract.id), part);
+    const active = resolvePart(await listParts(app.db, id), part);
     if (!active) return [];
     return app.db
       .select()
@@ -63,23 +58,17 @@ export async function ks2Routes(app: FastifyInstance) {
     const { id } = idParam.parse(req.params);
     await assertObjectExists(app.db, req.authUser, id);
     const input = docSchema.parse(req.body);
-    const [contract] = await app.db
-      .select({ id: contracts.id })
-      .from(contracts)
-      .where(and(eq(contracts.objectId, id), isNull(contracts.deletedAt)));
-    if (!contract) throw ApiError.badRequest('Сначала заведите договор по объекту', 'no_contract');
     // документ создаётся в активной вкладке; если смета ещё не заводилась —
     // заводим legacy-часть, чтобы ручной ввод работал и без импорта
-    const parts = await listParts(app.db, contract.id);
+    const parts = await listParts(app.db, id);
     const part = parts.length === 0
-      ? await ensurePart(app.db, contract.id, 'legacy')
+      ? await ensurePart(app.db, id, 'legacy')
       : resolvePart(parts, input.part)!;
     assertPeriodFitsPart(part.code, input.periodFrom, input.periodTo);
-    await ks2.assertUniqueNumber(app.db, contract.id, part.id, input.number);
+    await ks2.assertUniqueNumber(app.db, part.id, input.number);
     const [created] = await app.db
       .insert(ks2Documents)
       .values({
-        contractId: contract.id,
         partId: part.id,
         number: input.number,
         docDate: input.docDate ?? null,
@@ -101,7 +90,7 @@ export async function ks2Routes(app: FastifyInstance) {
   app.get('/ks2/:id', { preHandler: [app.authenticate] }, async (req) => {
     const { id } = idParam.parse(req.params);
     const doc = await ks2.getDocOrThrow(app.db, id);
-    await assertContractAccess(app.db, req.authUser, doc.contractId);
+    await assertPartAccess(app.db, req.authUser, doc.partId);
     const lines = await app.db.select().from(ks2Lines).where(eq(ks2Lines.ks2DocumentId, id));
     return { ...doc, lines, totalAmount: sumStrings(lines.map((l) => l.amount)) };
   });
@@ -109,7 +98,7 @@ export async function ks2Routes(app: FastifyInstance) {
   app.patch('/ks2/:id', { preHandler: [app.authenticate] }, async (req) => {
     const { id } = idParam.parse(req.params);
     const doc = await ks2.getDocOrThrow(app.db, id);
-    await assertContractAccess(app.db, req.authUser, doc.contractId);
+    await assertPartAccess(app.db, req.authUser, doc.partId);
     if (doc.status !== 'draft') {
       throw ApiError.conflict('КС-2 утверждён — редактирование запрещено', 'ks2_approved');
     }
@@ -126,7 +115,7 @@ export async function ks2Routes(app: FastifyInstance) {
       input.periodTo === undefined ? doc.periodTo : input.periodTo,
     );
     if (input.number) {
-      await ks2.assertUniqueNumber(app.db, doc.contractId, doc.partId, input.number, id);
+      await ks2.assertUniqueNumber(app.db, doc.partId, input.number, id);
     }
     const { part: _part, ...patch } = input;
     const [updated] = await app.db
@@ -140,7 +129,7 @@ export async function ks2Routes(app: FastifyInstance) {
   app.put('/ks2/:id/lines', { preHandler: [app.authenticate] }, async (req) => {
     const { id } = idParam.parse(req.params);
     const doc = await ks2.getDocOrThrow(app.db, id);
-    await assertContractAccess(app.db, req.authUser, doc.contractId);
+    await assertPartAccess(app.db, req.authUser, doc.partId);
     const input = linesSchema.parse(req.body);
     return ks2.setLines(app.db, id, input.lines, req.authUser.id);
   });
@@ -151,7 +140,7 @@ export async function ks2Routes(app: FastifyInstance) {
     async (req) => {
       const { id } = idParam.parse(req.params);
       const doc = await ks2.getDocOrThrow(app.db, id);
-      await assertContractAccess(app.db, req.authUser, doc.contractId);
+      await assertPartAccess(app.db, req.authUser, doc.partId);
       return ks2.approve(app.db, id, req.authUser.id);
     },
   );
@@ -162,7 +151,7 @@ export async function ks2Routes(app: FastifyInstance) {
     async (req) => {
       const { id } = idParam.parse(req.params);
       const doc = await ks2.getDocOrThrow(app.db, id);
-      await assertContractAccess(app.db, req.authUser, doc.contractId);
+      await assertPartAccess(app.db, req.authUser, doc.partId);
       return ks2.returnToDraft(app.db, id, req.authUser.id);
     },
   );
@@ -170,7 +159,7 @@ export async function ks2Routes(app: FastifyInstance) {
   app.delete('/ks2/:id', { preHandler: [app.authenticate] }, async (req) => {
     const { id } = idParam.parse(req.params);
     const doc = await ks2.getDocOrThrow(app.db, id);
-    await assertContractAccess(app.db, req.authUser, doc.contractId);
+    await assertPartAccess(app.db, req.authUser, doc.partId);
     if (doc.status !== 'draft') {
       throw ApiError.conflict('Утверждённый КС-2 удалить нельзя', 'ks2_approved');
     }
@@ -199,12 +188,7 @@ export async function ks2Routes(app: FastifyInstance) {
     async (req) => {
       const { id } = idParam.parse(req.params);
       await assertObjectExists(app.db, req.authUser, id);
-      const [contract] = await app.db
-        .select({ id: contracts.id })
-        .from(contracts)
-        .where(and(eq(contracts.objectId, id), isNull(contracts.deletedAt)));
-      if (!contract) throw ApiError.badRequest('По объекту нет договора', 'no_contract');
-      const res = await ks2.clearByContract(app.db, contract.id, req.authUser.id);
+      const res = await ks2.clearByObject(app.db, id, req.authUser.id);
       return { message: `Удалено КС-2: ${res.documents}, строк выполнения: ${res.lines}`, ...res };
     },
   );

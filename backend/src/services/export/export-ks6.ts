@@ -48,7 +48,6 @@ export async function exportKs6(db: Db, objectId: string): Promise<{ buffer: Buf
   if (!object) throw ApiError.notFound('Объект не найден');
 
   const base = await getKs6Grid(db, objectId);
-  if (!base.contract) throw ApiError.badRequest('По объекту не заведён договор', 'no_contract');
 
   const wb = new ExcelJS.Workbook();
   wb.creator = 'Портал КС';
@@ -73,7 +72,6 @@ function writeKs6Sheet(
   grid: Ks6Grid,
   object: typeof constructionObjects.$inferSelect,
 ): void {
-  if (!grid.contract) return;
   const ws = wb.addWorksheet(sheetTitle, {
     views: [{ state: 'frozen', xSplit: 4, ySplit: 0 }],
   });
@@ -96,22 +94,9 @@ function writeKs6Sheet(
     return cell;
   };
 
-  put(1, 1, 'Заказчик:', { bold: true });
-  put(1, 3, grid.contract.customerName);
-  put(2, 1, 'Генподрядчик:', { bold: true });
-  put(2, 3, grid.contract.contractorName);
-  put(3, 1, 'Стройка:', { bold: true });
-  put(3, 3, grid.contract.subject);
-  put(4, 1, 'Объект:', { bold: true });
-  put(4, 3, `${object.code} — ${object.name}${object.address ? `, ${object.address}` : ''}`);
-  put(5, 1, 'Договор подряда:', { bold: true });
-  put(5, 3, `№ ${grid.contract.number} от ${fmtRuDate(grid.contract.dateSigned)}`);
-  const lastAmendment = grid.amendments[grid.amendments.length - 1];
-  if (lastAmendment) {
-    put(6, 1, 'Доп. соглашение:', { bold: true });
-    put(6, 3, `№ ${lastAmendment.number} от ${fmtRuDate(lastAmendment.dateSigned)}`);
-  }
-  put(7, 1, 'ЖУРНАЛ УЧЁТА ВЫПОЛНЕННЫХ РАБОТ (КС-6, накопительная ведомость)', { bold: true });
+  put(1, 1, 'Объект:', { bold: true });
+  put(1, 3, `${object.code} — ${object.name}${object.address ? `, ${object.address}` : ''}`);
+  put(3, 1, 'ЖУРНАЛ УЧЁТА ВЫПОЛНЕННЫХ РАБОТ (КС-6, накопительная ведомость)', { bold: true });
 
   // ---- шапка таблицы ----
   const labelRow = 9; // подписи КС-2 №N + период
@@ -187,7 +172,7 @@ function writeKs6Sheet(
         pattern: 'solid',
         fgColor: { argb: sectionFills[row.level] ?? 'FFF2F4F7' },
       };
-      r.getCell(3).value = sanitizeCellText(row.name) + (row.amendmentNumber ? ` [ДС №${row.amendmentNumber}]` : '');
+      r.getCell(3).value = sanitizeCellText(row.name);
       r.getCell(3).font = { bold: true };
       r.getCell(9).value = toNumKeepZero(row.contractTotal);
       r.getCell(11).value = toNumKeepZero(row.executedAmount);
@@ -206,9 +191,9 @@ function writeKs6Sheet(
       itemCounter += 1;
       r.getCell(1).value = itemCounter;
       r.getCell(2).value = sanitizeCellText(row.kvrCode);
-      r.getCell(3).value =
-        sanitizeCellText(row.kind === 'nomenclature' ? `    ${row.name}` : row.name) +
-        (row.amendmentNumber ? ` [ДС №${row.amendmentNumber}]` : '');
+      r.getCell(3).value = sanitizeCellText(
+        row.kind === 'nomenclature' ? `    ${row.name}` : row.name,
+      );
       r.getCell(4).value = sanitizeCellText(row.unit);
       r.getCell(5).value = toNum(row.contractQty);
       r.getCell(6).value = toNum(row.unitPrice);
@@ -240,9 +225,8 @@ function writeKs6Sheet(
   }
 
   // ---- итоги ----
-  const net = grid.totals.vatMode === 'net';
   const totalRow = ws.getRow(rowNum);
-  totalRow.getCell(3).value = net ? 'Итого, руб., без НДС' : 'Итого, руб., в т.ч. НДС';
+  totalRow.getCell(3).value = 'Итого, руб., в т.ч. НДС';
   totalRow.getCell(9).value = toNumKeepZero(grid.totals.contractTotal);
   totalRow.getCell(11).value = toNumKeepZero(grid.totals.executedAmount);
   periods.forEach((p, i) => {
@@ -254,15 +238,13 @@ function writeKs6Sheet(
   // ставка зависит от даты периода (20% до 31.12.2025, 22% с 01.01.2026),
   // поэтому в подписи перечисляются все ставки, встреченные в документе
   const rates = [...new Set(periods.map((p) => vatRateOn(p.periodFrom ?? p.docDate)))].sort();
-  vatRow.getCell(3).value = net ? 'НДС не облагается' : `НДС ${rates.join('/')}%`;
+  vatRow.getCell(3).value = `НДС ${rates.join('/')}%`;
   vatRow.getCell(9).value = toNumKeepZero(grid.totals.vatContract);
   vatRow.getCell(11).value = toNumKeepZero(grid.totals.vatExecuted);
   periods.forEach((p, i) => {
-    vatRow.getCell(pairCol(i) + 1).value = net
-      ? null
-      : toNumKeepZero(
-          vatFromGross(grid.totals.byPeriod[p.id] ?? '0', p.periodFrom ?? p.docDate),
-        );
+    vatRow.getCell(pairCol(i) + 1).value = toNumKeepZero(
+      vatFromGross(grid.totals.byPeriod[p.id] ?? '0', p.periodFrom ?? p.docDate),
+    );
   });
   for (const r of [totalRow, vatRow]) {
     for (let c = 1; c <= lastCol; c++) {

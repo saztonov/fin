@@ -12,7 +12,6 @@ import { createLogger } from '../lib/logger.js';
 import { authPlugin } from './plugins/auth.js';
 import { adminRoutes } from './routes/admin.js';
 import { authRoutes } from './routes/auth.js';
-import { contractRoutes } from './routes/contracts.js';
 import { exportRoutes } from './routes/exports.js';
 import { importRoutes } from './routes/imports.js';
 import { ks2Routes } from './routes/ks2.js';
@@ -95,7 +94,6 @@ export async function buildServer() {
     async (api) => {
       await api.register(authRoutes, { prefix: '/auth' });
       await api.register(objectRoutes);
-      await api.register(contractRoutes);
       await api.register(ks6Routes);
       await api.register(ks2Routes);
       await api.register(importRoutes);

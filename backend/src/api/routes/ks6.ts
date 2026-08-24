@@ -1,14 +1,14 @@
 import { and, eq, isNull } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { contracts, ks2Lines, ks6Sections, workItems } from '../../db/schema/index.js';
+import { ks2Lines, ks6Sections, workItems } from '../../db/schema/index.js';
 import { writeAudit } from '../../lib/audit.js';
 import { ApiError } from '../../lib/errors.js';
 import { lineAmount } from '../../lib/money.js';
-import { clearEstimateByContract } from '../../services/estimate.service.js';
+import { clearEstimateByObject } from '../../services/estimate.service.js';
 import { getKs6Grid } from '../../services/ks6.service.js';
 import { listParts, resolvePart } from '../../services/parts.service.js';
-import { assertContractAccess, assertObjectExists } from '../plugins/auth.js';
+import { assertObjectExists, assertPartAccess } from '../plugins/auth.js';
 
 const idParam = z.object({ id: z.string().uuid() });
 
@@ -25,7 +25,6 @@ const numStr = (msg: string) => z.string().regex(/^-?\d+(\.\d+)?$/, msg);
 const sectionSchema = z.object({
   name: z.string().trim().min(1).max(500),
   parentId: z.string().uuid().nullable().optional(),
-  amendmentId: z.string().uuid().nullable().optional(),
   afterSortOrder: z.number().int().optional(),
   /** вкладка, в которую добавляется раздел; без неё — часть по умолчанию */
   part: partCode.optional(),
@@ -44,20 +43,19 @@ const workItemSchema = z.object({
   materialUnitCost: numStr('Стоимость материала — число').nullable().optional(),
   workUnitCost: numStr('Стоимость работ — число').nullable().optional(),
   contractTotal: numStr('Всего — число').optional(),
-  amendmentId: z.string().uuid().nullable().optional(),
   afterSortOrder: z.number().int().optional(),
 });
 
-async function nextSortOrder(app: FastifyInstance, contractId: string, after?: number) {
+async function nextSortOrder(app: FastifyInstance, partId: string, after?: number) {
   if (after !== undefined) return after + 5;
   const items = await app.db
     .select({ sortOrder: workItems.sortOrder })
     .from(workItems)
-    .where(eq(workItems.contractId, contractId));
+    .where(eq(workItems.partId, partId));
   const sections = await app.db
     .select({ sortOrder: ks6Sections.sortOrder })
     .from(ks6Sections)
-    .where(eq(ks6Sections.contractId, contractId));
+    .where(eq(ks6Sections.partId, partId));
   const max = Math.max(0, ...items.map((i) => i.sortOrder), ...sections.map((s) => s.sortOrder));
   return max + 10;
 }
@@ -72,7 +70,7 @@ export async function ks6Routes(app: FastifyInstance) {
 
   /**
    * Полная очистка сметы по объекту: строки, разделы и вся история КС-2 —
-   * под перезаливку книги «с нуля». Договор и ДС остаются.
+   * под перезаливку книги «с нуля».
    */
   app.delete(
     '/objects/:id/estimate',
@@ -80,12 +78,7 @@ export async function ks6Routes(app: FastifyInstance) {
     async (req) => {
       const { id } = idParam.parse(req.params);
       await assertObjectExists(app.db, req.authUser, id);
-      const [contract] = await app.db
-        .select({ id: contracts.id })
-        .from(contracts)
-        .where(and(eq(contracts.objectId, id), isNull(contracts.deletedAt)));
-      if (!contract) throw ApiError.badRequest('По объекту нет договора', 'no_contract');
-      const res = await clearEstimateByContract(app.db, contract.id, req.authUser.id);
+      const res = await clearEstimateByObject(app.db, id, req.authUser.id);
       return {
         message:
           `Удалено строк сметы: ${res.items}, разделов: ${res.sections}, ` +
@@ -99,23 +92,18 @@ export async function ks6Routes(app: FastifyInstance) {
   app.get('/objects/:id/estimate/parts', { preHandler: [app.authenticate] }, async (req) => {
     const { id } = idParam.parse(req.params);
     await assertObjectExists(app.db, req.authUser, id);
-    const [contract] = await app.db
-      .select({ id: contracts.id })
-      .from(contracts)
-      .where(and(eq(contracts.objectId, id), isNull(contracts.deletedAt)));
-    if (!contract) return [];
-    return listParts(app.db, contract.id);
+    return listParts(app.db, id);
   });
 
   app.post(
-    '/contracts/:id/sections',
+    '/objects/:id/sections',
     { preHandler: [app.authenticate, app.requireRole('admin', 'manager')] },
     async (req, reply) => {
       const { id } = idParam.parse(req.params);
-      await assertContractAccess(app.db, req.authUser, id);
+      await assertObjectExists(app.db, req.authUser, id);
       const input = sectionSchema.parse(req.body);
       const part = resolvePart(await listParts(app.db, id), input.part);
-      if (!part) throw ApiError.badRequest('Смета по договору не заведена', 'no_estimate');
+      if (!part) throw ApiError.badRequest('Смета по объекту не заведена', 'no_estimate');
       // родитель обязан быть из той же части: иначе дерево разделов «прошивало» бы
       // границу между версиями сметы
       if (input.parentId) {
@@ -130,12 +118,10 @@ export async function ks6Routes(app: FastifyInstance) {
       const [created] = await app.db
         .insert(ks6Sections)
         .values({
-          contractId: id,
           partId: part.id,
           name: input.name,
           parentId: input.parentId ?? null,
-          amendmentId: input.amendmentId ?? null,
-          sortOrder: await nextSortOrder(app, id, input.afterSortOrder),
+          sortOrder: await nextSortOrder(app, part.id, input.afterSortOrder),
         })
         .returning();
       await writeAudit(app.db, {
@@ -159,12 +145,11 @@ export async function ks6Routes(app: FastifyInstance) {
         .from(ks6Sections)
         .where(and(eq(ks6Sections.id, id), isNull(ks6Sections.deletedAt)));
       if (!row) throw ApiError.notFound('Раздел не найден');
-      await assertContractAccess(app.db, req.authUser, row.contractId);
+      await assertPartAccess(app.db, req.authUser, row.partId);
       const [updated] = await app.db
         .update(ks6Sections)
         .set({
           ...(input.name !== undefined ? { name: input.name } : {}),
-          ...(input.amendmentId !== undefined ? { amendmentId: input.amendmentId } : {}),
           updatedAt: new Date(),
         })
         .where(eq(ks6Sections.id, id))
@@ -183,7 +168,7 @@ export async function ks6Routes(app: FastifyInstance) {
         .from(ks6Sections)
         .where(and(eq(ks6Sections.id, id), isNull(ks6Sections.deletedAt)));
       if (!row) throw ApiError.notFound('Раздел не найден');
-      await assertContractAccess(app.db, req.authUser, row.contractId);
+      await assertPartAccess(app.db, req.authUser, row.partId);
       const children = await app.db
         .select({ id: ks6Sections.id })
         .from(ks6Sections)
@@ -201,22 +186,20 @@ export async function ks6Routes(app: FastifyInstance) {
   );
 
   app.post(
-    '/contracts/:id/work-items',
+    '/objects/:id/work-items',
     { preHandler: [app.authenticate, app.requireRole('admin', 'manager')] },
     async (req, reply) => {
       const { id } = idParam.parse(req.params);
-      await assertContractAccess(app.db, req.authUser, id);
+      await assertObjectExists(app.db, req.authUser, id);
       const input = workItemSchema.parse(req.body);
       const [section] = await app.db
-        .select({
-          id: ks6Sections.id,
-          contractId: ks6Sections.contractId,
-          partId: ks6Sections.partId,
-        })
+        .select({ id: ks6Sections.id, partId: ks6Sections.partId })
         .from(ks6Sections)
         .where(and(eq(ks6Sections.id, input.sectionId), isNull(ks6Sections.deletedAt)));
-      if (!section || section.contractId !== id) {
-        throw ApiError.badRequest('Раздел не принадлежит договору', 'bad_section');
+      if (!section) throw ApiError.notFound('Раздел не найден');
+      const { objectId } = await assertPartAccess(app.db, req.authUser, section.partId);
+      if (objectId !== id) {
+        throw ApiError.badRequest('Раздел не принадлежит объекту', 'bad_section');
       }
       // часть строки задаёт её раздел; КВР обязан быть из той же части, иначе
       // агрегат собирал бы номенклатуры из двух версий сметы
@@ -233,7 +216,6 @@ export async function ks6Routes(app: FastifyInstance) {
       const [created] = await app.db
         .insert(workItems)
         .values({
-          contractId: id,
           partId: section.partId,
           sectionId: input.sectionId,
           kind: input.kind,
@@ -247,8 +229,7 @@ export async function ks6Routes(app: FastifyInstance) {
           materialUnitCost: input.materialUnitCost ?? null,
           workUnitCost: input.workUnitCost ?? null,
           contractTotal,
-          amendmentId: input.amendmentId ?? null,
-          sortOrder: await nextSortOrder(app, id, input.afterSortOrder),
+          sortOrder: await nextSortOrder(app, section.partId, input.afterSortOrder),
         })
         .returning();
       await writeAudit(app.db, {
@@ -272,7 +253,7 @@ export async function ks6Routes(app: FastifyInstance) {
         .from(workItems)
         .where(and(eq(workItems.id, id), isNull(workItems.deletedAt)));
       if (!row) throw ApiError.notFound('Строка не найдена');
-      await assertContractAccess(app.db, req.authUser, row.contractId);
+      await assertPartAccess(app.db, req.authUser, row.partId);
       const { afterSortOrder: _skip, sectionId: _s, kind: _k, ...patch } = input;
       const [updated] = await app.db
         .update(workItems)
@@ -300,7 +281,7 @@ export async function ks6Routes(app: FastifyInstance) {
         .from(workItems)
         .where(and(eq(workItems.id, id), isNull(workItems.deletedAt)));
       if (!row) throw ApiError.notFound('Строка не найдена');
-      await assertContractAccess(app.db, req.authUser, row.contractId);
+      await assertPartAccess(app.db, req.authUser, row.partId);
       const usage = await app.db
         .select({ id: ks2Lines.id })
         .from(ks2Lines)

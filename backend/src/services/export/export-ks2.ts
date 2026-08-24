@@ -1,7 +1,7 @@
 import ExcelJS from 'exceljs';
 import { and, eq, isNull } from 'drizzle-orm';
 import type { Db } from '../../db/client.js';
-import { constructionObjects, contracts, estimateParts, ks2Documents } from '../../db/schema/index.js';
+import { constructionObjects, estimateParts, ks2Documents } from '../../db/schema/index.js';
 import { ApiError } from '../../lib/errors.js';
 import { dec, sumStrings, vatFromGrossRate, vatRateOn } from '../../lib/money.js';
 import { getKs6Grid } from '../ks6.service.js';
@@ -26,23 +26,19 @@ export async function exportKs2(db: Db, ks2Id: string): Promise<{ buffer: Buffer
     .from(ks2Documents)
     .where(and(eq(ks2Documents.id, ks2Id), isNull(ks2Documents.deletedAt)));
   if (!doc) throw ApiError.notFound('КС-2 не найден');
-  const [contract] = await db
-    .select()
-    .from(contracts)
-    .where(eq(contracts.id, doc.contractId));
-  if (!contract) throw ApiError.notFound('Договор не найден');
-  const [object] = await db
-    .select()
-    .from(constructionObjects)
-    .where(eq(constructionObjects.id, contract.objectId));
-
   // грид берётся по части документа: строки сметы у частей 20 % и 22 % разные,
   // и общий грид не нашёл бы половину строк акта
   const [part] = await db
-    .select({ code: estimateParts.code })
+    .select({ code: estimateParts.code, objectId: estimateParts.objectId })
     .from(estimateParts)
     .where(eq(estimateParts.id, doc.partId));
-  const grid = await getKs6Grid(db, contract.objectId, { part: part?.code });
+  if (!part) throw ApiError.notFound('Часть сметы не найдена');
+  const [object] = await db
+    .select()
+    .from(constructionObjects)
+    .where(eq(constructionObjects.id, part.objectId));
+
+  const grid = await getKs6Grid(db, part.objectId, { part: part.code });
 
   const wb = new ExcelJS.Workbook();
   wb.creator = 'Портал КС';
@@ -59,15 +55,9 @@ export async function exportKs2(db: Db, ks2Id: string): Promise<{ buffer: Buffer
   put(2, 1, `КС-2 № ${doc.number} от ${fmtRuDate(doc.docDate)}`, true);
   put(3, 1, 'Отчетный период:');
   put(3, 3, `${fmtRuDate(doc.periodFrom)} — ${fmtRuDate(doc.periodTo)}`);
-  put(4, 1, 'Заказчик:');
-  put(4, 3, contract.customerName);
-  put(5, 1, 'Генподрядчик:');
-  put(5, 3, contract.contractorName);
-  put(6, 1, 'Объект:');
-  put(6, 3, object ? `${object.code} — ${object.name}` : '');
-  put(7, 1, 'Договор подряда:');
-  put(7, 3, `№ ${contract.number} от ${fmtRuDate(contract.dateSigned)}`);
-  if (doc.status === 'draft') put(8, 1, 'ЧЕРНОВИК (не утверждён)', true);
+  put(4, 1, 'Объект:');
+  put(4, 3, object ? `${object.code} — ${object.name}` : '');
+  if (doc.status === 'draft') put(5, 1, 'ЧЕРНОВИК (не утверждён)', true);
 
   const headerRow = 10;
   const headers: [number, string, number][] = [
@@ -138,12 +128,9 @@ export async function exportKs2(db: Db, ks2Id: string): Promise<{ buffer: Buffer
   totalRow.getCell(3).value = 'Итого, руб., в т.ч. НДС';
   totalRow.getCell(7).value = Number(total);
   const vatRow = ws.getRow(rowNum + 1);
-  // ставка части главнее даты: часть 22 % считается по 22 % даже у договора 2023 года.
-  // Для legacy (часть без ставки) — по дате периода, как и было.
-  const rate =
-    contract.vatMode === 'net'
-      ? 0
-      : (grid.activePart?.vatRate ?? vatRateOn(doc.periodFrom ?? doc.docDate ?? null));
+  // ставка части главнее даты: часть 22 % считается по 22 %, когда бы смета ни
+  // заводилась. Для legacy (часть без ставки) — по дате периода.
+  const rate = grid.activePart?.vatRate ?? vatRateOn(doc.periodFrom ?? doc.docDate ?? null);
   vatRow.getCell(3).value = rate ? `НДС ${rate}%` : 'НДС не облагается';
   vatRow.getCell(7).value = Number(vatFromGrossRate(total, rate));
   for (const r of [totalRow, vatRow]) {

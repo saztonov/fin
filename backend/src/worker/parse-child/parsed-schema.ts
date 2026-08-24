@@ -85,17 +85,11 @@ export const parsedImportSchema = z.object({
     rate: z.number().nullable(),
     mode: z.enum(['gross', 'net']).nullable(),
   }),
-  header: z.object({
-    contractNumber: z.string().nullable(),
-    contractDate: z.string().nullable(),
-    amendmentNumber: z.string().nullable(),
-    amendmentDate: z.string().nullable(),
-  }),
   sections: z.array(parsedSectionSchema),
   items: z.array(parsedItemSchema),
   ks2Columns: z.array(parsedKs2ColumnSchema),
   controls: z.object({
-    /** «Итого, руб., в т.ч. НДС» по договору из файла */
+    /** «Итого, руб., в т.ч. НДС» по смете из файла */
     contractTotal: z.string().nullable(),
     /** «НДС 20%» из файла */
     vat: z.string().nullable(),

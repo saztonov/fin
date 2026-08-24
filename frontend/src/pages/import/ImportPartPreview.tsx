@@ -1,8 +1,8 @@
-import { Alert, Card, Checkbox, DatePicker, Input, Segmented, Select, Space, Spin, Table, Typography } from 'antd';
+import { Alert, Card, Checkbox, DatePicker, Input, Segmented, Space, Spin, Table, Typography } from 'antd';
 import dayjs from 'dayjs';
 import { useEffect, useState } from 'react';
 import { useImportPreview } from '../../api/hooks';
-import type { Amendment, ItemDiff, ItemDiffStatus } from '../../api/types';
+import type { ItemDiff, ItemDiffStatus } from '../../api/types';
 import { fmtMoney } from '../../shared/lib/formatters';
 import { MoneyText } from '../../shared/ui/MoneyText';
 import { QtyText } from '../../shared/ui/QtyText';
@@ -25,7 +25,6 @@ export interface PartApplyState {
   importHistory: boolean;
   applyChanged: boolean;
   overwriteKs2: boolean;
-  amendmentId: string | null;
   /** предпросмотр загружен и параметры непротиворечивы */
   ready: boolean;
 }
@@ -35,7 +34,6 @@ export const emptyPartState: PartApplyState = {
   importHistory: true,
   applyChanged: false,
   overwriteKs2: false,
-  amendmentId: null,
   ready: false,
 };
 
@@ -48,7 +46,6 @@ interface Props {
   importId: string;
   enabled: boolean;
   isAdmin: boolean;
-  amendments: Amendment[];
   state: PartApplyState;
   onChange: (next: PartApplyState) => void;
 }
@@ -58,14 +55,7 @@ interface Props {
  * применения. Вынесен из мастера, потому что в режиме «две страницы КС» таких
  * панелей две — по одной на вкладку, и у каждой свои периоды и флаги.
  */
-export function ImportPartPreview({
-  importId,
-  enabled,
-  isAdmin,
-  amendments,
-  state,
-  onChange,
-}: Props) {
+export function ImportPartPreview({ importId, enabled, isAdmin, state, onChange }: Props) {
   const preview = useImportPreview(importId, enabled);
   const [filter, setFilter] = useState<'all' | ItemDiffStatus>('all');
 
@@ -116,7 +106,7 @@ export function ImportPartPreview({
       <Card size="small" title="Контрольные суммы">
         <Space size={24} wrap>
           <span>
-            Итого по договору (файл):{' '}
+            Итого по смете (файл):{' '}
             <b className="num">{fmtMoney(data.controls.contractTotal) || '—'}</b>
           </span>
           <span>
@@ -310,32 +300,15 @@ export function ImportPartPreview({
               Перезаписать строки существующих КС-2 с совпавшими номерами
             </Checkbox>
           ) : null}
-          {data.amendmentRequired ? (
-            <Space>
-              <Typography.Text>Новые строки добавляются по ДС:</Typography.Text>
-              <Select
-                style={{ width: 280 }}
-                placeholder="Выберите доп. соглашение"
-                status={!state.amendmentId ? 'error' : undefined}
-                value={state.amendmentId}
-                options={amendments.map((a) => ({
-                  value: a.id,
-                  label: `ДС №${a.number}${a.dateSigned ? ` от ${dayjs(a.dateSigned).format('DD.MM.YYYY')}` : ''}`,
-                }))}
-                onChange={(v) => patch({ amendmentId: v })}
-              />
-            </Space>
-          ) : null}
         </Space>
       </Card>
     </Space>
   );
 }
 
-/** Можно ли применять эту страницу: ДС выбрано, у непустых колонок есть номера. */
-export function partReady(state: PartApplyState, amendmentRequired: boolean): boolean {
+/** Можно ли применять эту страницу: у непустых колонок есть номера КС-2. */
+export function partReady(state: PartApplyState): boolean {
   if (!state.ready) return false;
-  if (amendmentRequired && !state.amendmentId) return false;
   if (!state.importHistory) return true;
   return state.periods.every((p) => p.cellCount === 0 || p.number.trim().length > 0);
 }
