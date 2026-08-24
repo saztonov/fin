@@ -6,6 +6,7 @@ import customParseFormat from 'dayjs/plugin/customParseFormat';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { RouterProvider } from 'react-router-dom';
 import { AuthProvider } from '../auth/AuthContext';
+import { AppUpdateBanner } from '../shared/ui/AppUpdateBanner';
 import { queryClient } from './queryClient';
 import { router } from './router';
 import { appTheme } from './theme';
@@ -19,6 +20,8 @@ export function App() {
       <AntApp>
         <QueryClientProvider client={queryClient}>
           <AuthProvider>
+            {/* вне RouterProvider — плашка видна на всех страницах, включая /login */}
+            <AppUpdateBanner />
             <RouterProvider router={router} />
           </AuthProvider>
         </QueryClientProvider>
