@@ -20,6 +20,11 @@ export function detectAggregates(
   warnings: string[],
   explicitKinds: ReadonlySet<string> = new Set(),
 ): void {
+  // Однотипные срабатывания сворачиваются в одно предупреждение: на реальных книгах
+  // их бывает под сотню, и в этом потоке тонет единственное важное сообщение —
+  // расхождение Σ строк с «Итого» файла.
+  const hits: { row: number; name: string; covered: number }[] = [];
+
   for (let i = 0; i < items.length; i++) {
     const head = items[i]!;
     if (head.kind !== 'nomenclature') continue;
@@ -37,12 +42,24 @@ export function detectAggregates(
         head.kind = 'kvr';
         head.kvrTmpId = null;
         for (let k = i + 1; k <= j; k++) items[k]!.kvrTmpId = head.tmpId;
-        warnings.push(
-          `Строка ${head.rowNumber}: «${head.name.slice(0, 50)}» распознана как агрегирующая (сумма ${covered} строк ниже) — учтена как КВР`,
-        );
+        hits.push({ row: head.rowNumber, name: head.name, covered });
         break;
       }
       if (acc > target + EPS) break;
     }
+  }
+
+  if (hits.length === 1) {
+    const h = hits[0]!;
+    warnings.push(
+      `Строка ${h.row}: «${h.name.slice(0, 50)}» распознана как агрегирующая (сумма ${h.covered} строк ниже) — учтена как КВР`,
+    );
+  } else if (hits.length > 1) {
+    const rows = hits.slice(0, 10).map((h) => h.row).join(', ');
+    const tail = hits.length > 10 ? ` и ещё ${hits.length - 10}` : '';
+    warnings.push(
+      `Распознано агрегирующих строк: ${hits.length} — учтены как КВР и в суммы не входят ` +
+        `(строки ${rows}${tail})`,
+    );
   }
 }

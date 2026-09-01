@@ -32,6 +32,9 @@ const applySchema = z.object({
   importHistory: z.boolean().default(true),
   overwriteKs2: z.boolean().default(false),
   approveImported: z.boolean().default(true),
+  // база сумм в файле: подтверждает человек в предпросмотре, предзаполнено
+  // распознанным vat.mode. По умолчанию — как есть, без пересчёта.
+  vatMode: z.enum(['gross', 'net']).default('gross'),
   periods: z
     .array(
       z.object({

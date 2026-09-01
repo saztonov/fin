@@ -1,4 +1,4 @@
-import { Alert, Card, Checkbox, DatePicker, Input, Segmented, Space, Spin, Table, Typography } from 'antd';
+import { Alert, Card, Checkbox, DatePicker, Input, Segmented, Space, Spin, Table, Tooltip, Typography } from 'antd';
 import dayjs from 'dayjs';
 import { useEffect, useState } from 'react';
 import { useImportPreview } from '../../api/hooks';
@@ -16,6 +16,11 @@ export interface PeriodDraft {
   label: string | null;
   cellCount: number;
   totalAmount: string;
+  /** итог файла по графе периода и расхождение с Σ строк — сверка на месте */
+  fileTotal: string | null;
+  mismatch: string | null;
+  /** период вне ставки вкладки: при применении будет пропущен */
+  outOfPart: boolean;
   existingDocStatus: string | null;
 }
 
@@ -25,6 +30,14 @@ export interface PartApplyState {
   importHistory: boolean;
   applyChanged: boolean;
   overwriteKs2: boolean;
+  /**
+   * База сумм в файле. `net` — книга без НДС, суммы будут приведены к с НДС по
+   * ставке вкладки. Предзаполняется распознанным `data.vat.mode`, но решение
+   * подтверждает человек: ошибка здесь стоит 20-22 % всех сумм.
+   */
+  vatMode: 'gross' | 'net';
+  /** пользователь уже видел предзаполнение и не менял его вручную */
+  vatModeTouched: boolean;
   /** предпросмотр загружен и параметры непротиворечивы */
   ready: boolean;
 }
@@ -34,6 +47,8 @@ export const emptyPartState: PartApplyState = {
   importHistory: true,
   applyChanged: false,
   overwriteKs2: false,
+  vatMode: 'gross',
+  vatModeTouched: false,
   ready: false,
 };
 
@@ -62,7 +77,8 @@ export function ImportPartPreview({ importId, enabled, isAdmin, state, onChange 
   // черновики реквизитов периодов из предпросмотра (+подстановка границ месяца)
   useEffect(() => {
     if (!preview.data) return;
-    const periods = preview.data.ks2Columns.map((c) => {
+    const data = preview.data;
+    const periods = data.ks2Columns.map((c) => {
       const bounds = !c.periodFrom && c.monthDate ? monthBounds(c.monthDate) : null;
       return {
         index: c.index,
@@ -72,10 +88,16 @@ export function ImportPartPreview({ importId, enabled, isAdmin, state, onChange 
         label: c.label,
         cellCount: c.cellCount,
         totalAmount: c.totalAmount,
+        fileTotal: c.fileTotal,
+        mismatch: c.mismatch,
+        outOfPart: c.outOfPart,
         existingDocStatus: c.existingDocStatus,
       };
     });
-    onChange({ ...state, periods, ready: true });
+    // предзаполнение базы сумм распознанным режимом: если человек уже трогал
+    // переключатель, его выбор не перетираем
+    const vatMode = state.vatModeTouched ? state.vatMode : (data.vat.mode ?? 'gross');
+    onChange({ ...state, periods, vatMode, ready: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [preview.data]);
 
@@ -250,6 +272,21 @@ export function ImportPartPreview({ importId, enabled, isAdmin, state, onChange 
                   />
                 ),
               },
+              {
+                // Период вне границ ставки этой вкладки применён не будет. Раньше
+                // он пропадал молча — счётчик пропущенных не доходил до интерфейса.
+                title: 'Вкладка',
+                dataIndex: 'outOfPart',
+                width: 130,
+                render: (v: boolean) =>
+                  v ? (
+                    <Tooltip title="Даты периода вне ставки НДС этой вкладки — при применении будет пропущен">
+                      <Typography.Text type="warning">вне вкладки</Typography.Text>
+                    </Tooltip>
+                  ) : (
+                    <Typography.Text type="secondary">своя</Typography.Text>
+                  ),
+              },
               { title: 'Строк', dataIndex: 'cellCount', width: 70, align: 'right' },
               {
                 title: 'Сумма, ₽',
@@ -257,6 +294,27 @@ export function ImportPartPreview({ importId, enabled, isAdmin, state, onChange 
                 width: 150,
                 align: 'right',
                 render: (v: string) => <MoneyText value={v} />,
+              },
+              {
+                // Сверка с итогом файла по этой же графе. Именно она ловит задвоение
+                // разделов: видно, какая КС-2 разъехалась и на сколько, а не общее
+                // «суммы не бьются» по всей смете.
+                title: 'Расхождение с файлом',
+                dataIndex: 'mismatch',
+                width: 180,
+                align: 'right',
+                render: (v: string | null, row) =>
+                  v ? (
+                    <Tooltip title={`Итого файла по этой графе: ${row.fileTotal ?? '—'} ₽`}>
+                      <Typography.Text type="danger">
+                        <MoneyText value={v} />
+                      </Typography.Text>
+                    </Tooltip>
+                  ) : row.fileTotal === null ? (
+                    <Typography.Text type="secondary">нет итога</Typography.Text>
+                  ) : (
+                    <Typography.Text type="success">сходится</Typography.Text>
+                  ),
               },
               {
                 title: 'В портале',
@@ -276,6 +334,30 @@ export function ImportPartPreview({ importId, enabled, isAdmin, state, onChange 
 
       <Card size="small" title="Параметры применения">
         <Space direction="vertical" size={8}>
+          <Space size={8} align="center">
+            <Typography.Text>Суммы в файле:</Typography.Text>
+            <Segmented
+              size="small"
+              value={state.vatMode}
+              options={[
+                { label: 'с НДС', value: 'gross' },
+                { label: 'без НДС', value: 'net' },
+              ]}
+              onChange={(v) => patch({ vatMode: v as 'gross' | 'net', vatModeTouched: true })}
+            />
+            {state.vatMode === 'net' ? (
+              <Typography.Text type="warning">
+                суммы будут приведены к с НДС по ставке вкладки
+              </Typography.Text>
+            ) : null}
+          </Space>
+          {data.vat.mode === 'net' && !state.vatModeTouched ? (
+            <Alert
+              type="info"
+              showIcon
+              message="В шапке книги графы подписаны «без НДС» — переключатель выставлен соответственно. Проверьте: портал везде ведёт учёт с НДС."
+            />
+          ) : null}
           {data.kind === 'ks6' ? (
             <Checkbox
               checked={state.importHistory}

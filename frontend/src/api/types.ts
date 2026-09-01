@@ -226,6 +226,12 @@ export interface Ks2ColumnDiff {
   periodTo: string | null;
   cellCount: number;
   totalAmount: string;
+  /** итог файла по графе периода — эталон сверки */
+  fileTotal: string | null;
+  /** Σ строк минус итог файла; null — сходится или сверять не с чем */
+  mismatch: string | null;
+  /** период вне границ ставки вкладки — при применении будет пропущен */
+  outOfPart: boolean;
   existingDocId: string | null;
   existingDocStatus: string | null;
 }
@@ -238,6 +244,8 @@ export interface ImportPreview {
   sections: { tmpId: string; name: string; level: number; exists: boolean }[];
   items: ItemDiff[];
   ks2Columns: Ks2ColumnDiff[];
+  /** распознанная база сумм книги — предзаполнение переключателя */
+  vat: { rate: number | null; mode: 'gross' | 'net' | null };
   counts: { new: number; match: number; changed: number; missing: number };
   controls: {
     contractTotal: string | null;
@@ -258,5 +266,7 @@ export interface ApplyResult {
   ks2Created: number;
   ks2Overwritten: number;
   ks2Skipped: number;
+  /** периодов пропущено: их даты вне ставки этой вкладки */
+  ks2OutOfPart: number;
   linesCreated: number;
 }

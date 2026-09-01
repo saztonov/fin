@@ -1,4 +1,5 @@
 import { detectAggregates } from './aggregate-pass.js';
+import { buildCodeHierarchy, codeRole, type CodeHierarchy } from './code-hierarchy.js';
 import { detectHeader, type HeaderLayout } from './header-detect.js';
 import { normHeader } from './header-dictionary.js';
 import { detectPeriodGroups } from './period-groups.js';
@@ -9,7 +10,14 @@ import {
   type ParsedKs2Column,
   type ParsedSection,
 } from './parsed-schema.js';
-import { classifyRow, isDocumentTotalRow, isTotalRow, type RowFacts } from './row-classify.js';
+import {
+  classifyRow,
+  isDocumentTotalRow,
+  isGrossTotalRow,
+  isTotalRow,
+  isVatAmountRow,
+  type RowFacts,
+} from './row-classify.js';
 import {
   cellDate,
   cellDecimal,
@@ -99,11 +107,30 @@ export function parseSheet(ws: SheetGrid, kind: 'psdc' | 'ks6'): ParsedImport {
   let controlsVat: string | null = null;
   let controlsExecuted: string | null = null;
   let totalsRowSeen = false;
+  /** графа суммы периода → её значение в строке «Итого» файла */
+  const controlsByPeriod = new Map<number, string>();
+
+  // режим цен нужен уже при разборе итоговых строк — какую из них брать контролем
+  const vatInfo = detectVat(ws, layout);
 
   const execControl = groups.controls.find((c) => c.role === 'executed') ?? null;
   const kindStats = cols.kind ? countKindValues(ws, layout, cols.kind) : { items: 0, sublines: 0 };
   const kindColumnUsed = kindStats.items >= 5;
   const sublineMarkerUsed = kindStats.sublines >= 3;
+
+  // Вложенность по точечному шифру «№ п/п» — применяется, только если её
+  // подтвердила арифметика самого файла. Явные графы «Вид» и «Уровень» главнее:
+  // при них вложенность из шифра не применяем, но сами шифры остаются — по ним
+  // работает проверка на задвоение ниже.
+  const codeTree = buildCodeHierarchy(ws, layout);
+  const hierarchy: CodeHierarchy =
+    kindColumnUsed || cols.level !== undefined ? { ...codeTree, trusted: false } : codeTree;
+  if (hierarchy.trusted) {
+    warnings.push(
+      `Вложенность взята из графы «№ п/п»: ${hierarchy.parents.size} строк с потомками учтены как разделы ` +
+        `(сходимость сумм ${hierarchy.matched} из ${hierarchy.nodes})`,
+    );
+  }
   // накопленная сумма номенклатуры — по ней отличаем итог документа от итога раздела
   let nomAccum = dec(0);
 
@@ -125,6 +152,7 @@ export function parseSheet(ws: SheetGrid, kind: 'psdc' | 'ks6'): ParsedImport {
       levelText: cols.level ? cellText(ws, r, cols.level) : '',
       posNo: cols.posNo ? cellText(ws, r, cols.posNo) : '',
       code: cols.code ? cellText(ws, r, cols.code) : '',
+      codeRole: codeRole(hierarchy, r),
       name,
       unit: cols.unit ? cellText(ws, r, cols.unit) : '',
       unitColumnPresent: cols.unit !== undefined,
@@ -148,20 +176,41 @@ export function parseSheet(ws: SheetGrid, kind: 'psdc' | 'ks6'): ParsedImport {
         nomAccum.gt(0) &&
         dec(totalRaw!).gte(nomAccum.mul(0.95)) &&
         isDocumentTotalRow(name);
+      // Графы листа без НДС — значит и контрольный итог нужен без НДС. Иначе
+      // сверка идёт на разных базах: у «Садовническая 69» строки дают 6,54 млрд,
+      // а строка «ИТОГО, в т.ч. НДС 22%» — 7,98 млрд, и разница в 1,44 млрд
+      // выглядит потерей данных, хотя это просто налог.
+      const wrongVatBase = vatInfo.mode === 'net' && isGrossTotalRow(name);
+      // строка самого налога итогом сметы быть не может
+      const isVatRow = isVatAmountRow(name);
       if (
         totalRaw !== null &&
+        !wrongVatBase &&
+        !isVatRow &&
         (isGrandTotal || controlsTotal === null || dec(totalRaw).gt(dec(controlsTotal)))
       ) {
         controlsTotal = money2(totalRaw);
         controlsExecuted = execControl
           ? money2(cellDecimal(ws, r, execControl.amountCol))
           : null;
+        // Та же строка «Итого» несёт итог и по каждой графе выполнения — это
+        // готовый эталон на период. Сверка с ним показывает не просто «где-то
+        // сходится плохо», а прямо какая КС-2 разъехалась и на сколько.
+        controlsByPeriod.clear();
+        for (const g of groups.periods) {
+          const v = money2(cellDecimal(ws, r, g.amountCol));
+          if (v !== null) controlsByPeriod.set(g.amountCol, v);
+        }
       }
       totalsRowSeen = true;
-      for (let r2 = r + 1; r2 <= Math.min(r + 3, ws.rowCount); r2++) {
-        if (cellText(ws, r2, colName).includes('НДС') && cols.total) {
-          controlsVat = money2(cellDecimal(ws, r2, cols.total));
-          break;
+      // сумма налога — только строка, которая и есть НДС; найденное не перезаписываем,
+      // иначе следующая итоговая строка подменит его итогом «в т.ч. НДС»
+      if (controlsVat === null && cols.total) {
+        for (let r2 = r + 1; r2 <= Math.min(r + 3, ws.rowCount); r2++) {
+          if (isVatAmountRow(cellText(ws, r2, colName))) {
+            controlsVat = money2(cellDecimal(ws, r2, cols.total));
+            break;
+          }
         }
       }
       if (isGrandTotal) {
@@ -229,9 +278,31 @@ export function parseSheet(ws: SheetGrid, kind: 'psdc' | 'ks6'): ParsedImport {
   // Агрегирующие строки («Прижимная стена» = сумма 7 строк ниже) там, где вид строки
   // из файла не выводится: у строк с явной колонкой «Вид» совпадение сумм ничего не
   // значит (ЗИЛ: 30 обычных позиций с одинаковыми расценками по корпусам).
-  detectAggregates(items, warnings, explicitKinds);
+  // При подтверждённой иерархии шифров эвристика не нужна и вредна: она ловит
+  // случайные совпадения сумм соседей и на Дом_56 съедает настоящие позиции.
+  if (!hierarchy.trusted) detectAggregates(items, warnings, explicitKinds);
 
   const nomItems = items.filter((i) => i.kind === 'nomenclature');
+
+  // Структурный инвариант: учитываемая строка не может быть родителем другой
+  // учитываемой по шифру — иначе её сумма считается дважды. Проверяется всегда,
+  // в том числе когда вложенность не признана достоверной и разбор её не
+  // применяет: менять решение там не на чем, но показать риск задвоения нужно.
+  {
+    const offenders = nomItems.filter((i) => {
+      const code = codeTree.codeByRow.get(i.rowNumber);
+      return code !== undefined && codeTree.parents.has(code);
+    });
+    if (offenders.length) {
+      const amount = offenders.reduce((a, i) => a.add(dec(i.contractTotal)), dec(0));
+      const rows = offenders.slice(0, 8).map((i) => i.rowNumber).join(', ');
+      const tail = offenders.length > 8 ? ` и ещё ${offenders.length - 8}` : '';
+      warnings.push(
+        `Возможное задвоение: ${offenders.length} учитываемых строк имеют вложенные строки ` +
+          `с тем же шифром, на ${amount.toFixed(2)} руб. (строки ${rows}${tail})`,
+      );
+    }
+  }
 
   // сверка с контрольными суммами файла: расхождение не блокирует импорт
   // (источник истины — строки номенклатуры), но должно быть видно в предпросмотре
@@ -261,6 +332,7 @@ export function parseSheet(ws: SheetGrid, kind: 'psdc' | 'ks6'): ParsedImport {
       cells.push({ itemTmpId: item.tmpId, qty: qty6(q) ?? '0', amount: money2(a) ?? '0.00' });
     }
     if (cells.length === 0) continue;
+    const fileTotal = controlsByPeriod.get(g.amountCol) ?? null;
     ks2Columns.push({
       index: index++,
       label: g.label || null,
@@ -269,15 +341,46 @@ export function parseSheet(ws: SheetGrid, kind: 'psdc' | 'ks6'): ParsedImport {
       docDate: g.meta.docDate,
       periodFrom: g.meta.periodFrom,
       periodTo: g.meta.periodTo,
+      fileTotal,
       cells,
     });
+  }
+
+  // Сверка каждой КС-2 с итогом файла по её же графе. Именно она ловит задвоение
+  // разделов: расхождение видно поимённо по периоду, а не одной общей цифрой.
+  for (const col of ks2Columns) {
+    if (col.fileTotal === null) continue;
+    const sum = col.cells.reduce((acc, c) => acc.add(dec(c.amount)), dec(0));
+    const diff = sum.sub(dec(col.fileTotal));
+    if (diff.abs().gt(TOTALS_EPS)) {
+      warnings.push(
+        `КС-2 №${col.number ?? col.index + 1} (${col.label ?? 'без подписи'}): Σ строк ${sum.toFixed(2)} ` +
+          `расходится с «Итого» файла ${col.fileTotal} на ${diff.toFixed(2)} руб.`,
+      );
+    }
+  }
+
+  // Σ всех периодов против контрольной графы «Выполнено всего» — вторая независимая
+  // сверка: она ловит и потерю целой колонки, и задвоение внутри неё
+  if (controlsExecuted !== null && ks2Columns.length) {
+    const all = ks2Columns.reduce(
+      (acc, c) => c.cells.reduce((a, x) => a.add(dec(x.amount)), acc),
+      dec(0),
+    );
+    const diff = all.sub(dec(controlsExecuted));
+    if (diff.abs().gt(TOTALS_EPS)) {
+      warnings.push(
+        `Σ всех КС-2 ${all.toFixed(2)} расходится с контрольной графой «Выполнено всего» ` +
+          `${controlsExecuted} на ${diff.toFixed(2)} руб.`,
+      );
+    }
   }
 
   return {
     kind,
     sheetName: ws.name,
     sheetCandidates: [],
-    vat: detectVat(ws, layout),
+    vat: vatInfo,
     sections,
     items,
     ks2Columns,

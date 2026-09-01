@@ -121,6 +121,7 @@ export function ImportWizardPage() {
       applyChanged: s.applyChanged,
       importHistory: kind === 'ks6' && s.importHistory,
       overwriteKs2: s.overwriteKs2,
+      vatMode: s.vatMode,
       periods: s.periods
         .filter((p) => p.cellCount > 0)
         .map((p) => ({
@@ -365,6 +366,14 @@ export function ImportWizardPage() {
                 КС-2 создано: {result.ks2Created}, перезаписано: {result.ks2Overwritten}, пропущено:{' '}
                 {result.ks2Skipped}, строк выполнения: {result.linesCreated}
               </span>
+              {result.ks2OutOfPart > 0 && (
+                // периоды вне ставки вкладки применяются не будут — раньше это
+                // не показывалось нигде, и КС-2 пропадала молча
+                <Typography.Text type="warning">
+                  Периодов пропущено как вне вкладки: {result.ks2OutOfPart} — их даты не
+                  попадают в ставку НДС этой части сметы
+                </Typography.Text>
+              )}
             </Space>
           }
           extra={

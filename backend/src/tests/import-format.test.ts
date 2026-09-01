@@ -95,6 +95,7 @@ describe('классификация строк', () => {
     levelText: '',
     posNo: '',
     code: '',
+    codeRole: null,
     name: 'Работы',
     unit: '',
     unitColumnPresent: true,

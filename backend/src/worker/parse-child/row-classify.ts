@@ -20,6 +20,13 @@ export interface RowFacts {
   /** № п/п и шифр — источники глубины «1.1.1» */
   posNo: string;
   code: string;
+  /**
+   * Роль строки в дереве точечных шифров: `node` — есть потомки (агрегат),
+   * `leaf` — позиция. Заполняется, только когда вложенность подтверждена
+   * арифметикой самого файла (см. code-hierarchy.ts); иначе `null`, и на
+   * решение не влияет.
+   */
+  codeRole: 'node' | 'leaf' | null;
   name: string;
   unit: string;
   /** есть ли на листе графа «Ед. изм.» — от этого зависит признак позиции */
@@ -44,7 +51,7 @@ export interface RowVerdict {
    * позиции. `kind-text` — «Вид» заполнен своим текстом («не в системе»): понятно,
    * что это строка сметы, но не понятно, агрегат ли она.
    */
-  source: 'kind-column' | 'kind-text' | 'level-column' | 'code-depth' | 'shape';
+  source: 'kind-column' | 'kind-text' | 'level-column' | 'code-tree' | 'code-depth' | 'shape';
 }
 
 const KIND_MAP: Record<string, RowKind> = {
@@ -65,6 +72,29 @@ export function isTotalRow(name: string): boolean {
   if (s.startsWith('итого') || s.startsWith('всего')) return true;
   if (/^(без|с|в т\.?\s?ч\.?)\s*ндс/.test(s)) return true;
   return s === 'ндс' || /^ндс[\s\d]/.test(s);
+}
+
+/**
+ * Строка самого НДС («НДС 22%», «в т.ч. НДС 20 %»), а не итога, включающего НДС.
+ * Нужна, чтобы `controls.vat` брал сумму налога, а не строку «ИТОГО, в т.ч. НДС»,
+ * которая тоже содержит слово «НДС» и стоит рядом.
+ */
+export function isVatAmountRow(name: string): boolean {
+  const s = normName(name);
+  if (!s) return false;
+  if (/^(итого|всего)/.test(s)) return false;
+  return /^(в\s*т\.?\s*ч\.?\s*)?ндс([\s\d:,.]|$)/.test(s);
+}
+
+/**
+ * Итог, в который НДС уже включён («ИТОГО, в т.ч. НДС 22%», «Всего с НДС»).
+ * На листах, где графы идут без НДС, такой итог сверять со строками нельзя —
+ * он на другой базе.
+ */
+export function isGrossTotalRow(name: string): boolean {
+  if (!isTotalRow(name)) return false;
+  const s = normName(name);
+  return /(в\s*т\.?\s*ч\.?|с|включая|учетом)\s*ндс/.test(s);
 }
 
 /**
@@ -141,6 +171,16 @@ export function classifyRow(f: RowFacts): RowVerdict {
     (d): d is number => d !== null,
   );
   const byCode = depths.length ? Math.max(...depths) : null;
+
+  // Подтверждённая иерархия шифров главнее формы строки, и решает она в обе
+  // стороны. Узел с потомками — агрегат, чем бы ни была заполнена его графа
+  // «Ед. изм.»: разделы реальных книг несут «Компл» и «Кол-во 1» (Садовническая
+  // 69), и без этого они попадают в номенклатуру и складываются вместе с детьми.
+  // Лист — позиция, даже если ед. изм. пуста: «1.3.7 Разработка РД генплана по
+  // ПЗУ» задана одним «Всего», и эвристика формы потеряла бы её сумму.
+  if (f.codeRole === 'node') return { kind: 'section', depth: byCode ?? 0, source: 'code-tree' };
+  if (f.codeRole === 'leaf') return { kind: 'nomenclature', depth: byCode ?? 0, source: 'code-tree' };
+
   if (looksLikeItem(f)) {
     return { kind: 'nomenclature', depth: byCode ?? 0, source: byCode ? 'code-depth' : 'shape' };
   }

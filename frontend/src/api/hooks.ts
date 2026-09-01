@@ -242,6 +242,8 @@ export interface ApplyImportInput {
   applyChanged: boolean;
   importHistory: boolean;
   overwriteKs2: boolean;
+  /** база сумм книги: net → сервер приведёт суммы к с НДС по ставке вкладки */
+  vatMode: 'gross' | 'net';
   periods: { index: number; number: string; periodFrom?: string | null; periodTo?: string | null }[];
 }
 

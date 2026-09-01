@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { assertPeriodFitsPart, partOfPeriod, partRate } from '../lib/estimate-parts.js';
+import {
+  assertPeriodFitsPart,
+  partOfPeriod,
+  partRate,
+  periodFitsPart,
+} from '../lib/estimate-parts.js';
 import {
   netFromGross,
   netPriceFromGrossRate,
@@ -91,9 +96,30 @@ describe('Границы периодов по частям', () => {
     expect(() => assertPeriodFitsPart('legacy', '2026-05-01', '2026-01-01')).toThrow(/позже/);
   });
 
+  it('период через 31.12.2025 относится к вкладке по дате окончания', () => {
+    // «КС2№1 01.12.2025-18.02.2026» у Садовнической: раньше не проходил ни в одну
+    // вкладку и молча пропадал при импорте
+    expect(periodFitsPart('vat22', '2025-12-01', '2026-02-18')).toBe(true);
+    expect(periodFitsPart('vat20', '2025-12-01', '2026-02-18')).toBe(false);
+    expect(() => assertPeriodFitsPart('vat22', '2025-12-01', '2026-02-18')).not.toThrow();
+  });
+
+  it('плановый график 2026-2028 на листе «по 31.12.2025» вкладкой 20 % не принимается', () => {
+    // Сторис.xlsx: 36 колонок вперёд на листе 20 %, те же месяцы есть на листе 22 %
+    expect(periodFitsPart('vat20', '2026-05-01', '2026-05-31')).toBe(false);
+    expect(periodFitsPart('vat20', '2028-05-01', '2028-05-31')).toBe(false);
+  });
+
+  it('период без дат не отвергается — его дозаполняют вручную', () => {
+    expect(periodFitsPart('vat20', null, null)).toBe(true);
+    expect(periodFitsPart('vat22', null, null)).toBe(true);
+  });
+
   it('колонка книги относится к части по дате начала периода', () => {
     expect(partOfPeriod('2025-12-31')).toBe('vat20');
     expect(partOfPeriod('2026-01-01')).toBe('vat22');
     expect(partOfPeriod(null)).toBe('vat20');
+    // конец периода решает и здесь: акт закрывается на последнюю дату
+    expect(partOfPeriod('2025-12-01', '2026-02-18')).toBe('vat22');
   });
 });

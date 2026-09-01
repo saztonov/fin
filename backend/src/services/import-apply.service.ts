@@ -11,8 +11,14 @@ import {
 } from '../db/schema/index.js';
 import { writeAudit } from '../lib/audit.js';
 import { ApiError } from '../lib/errors.js';
-import { baseYearOfPart, periodFitsPart, type PartCode } from '../lib/estimate-parts.js';
-import { dec, sumStrings } from '../lib/money.js';
+import { baseYearOfPart, partRate, periodFitsPart, type PartCode } from '../lib/estimate-parts.js';
+import {
+  dec,
+  grossFromNetRate,
+  grossPriceFromNetRate,
+  sumStrings,
+  vatRateOn,
+} from '../lib/money.js';
 import { ensurePart, findPart } from './parts.service.js';
 import { monthIndexOf } from '../worker/parse-child/header-dictionary.js';
 import { TOTALS_EPS, type ParsedImport, type ParsedItem } from '../worker/parse-child/parsed-schema.js';
@@ -45,6 +51,12 @@ export interface Ks2ColumnDiff {
   periodTo: string | null;
   cellCount: number;
   totalAmount: string;
+  /** итог файла по графе этого периода — эталон для сверки; null, если его нет */
+  fileTotal: string | null;
+  /** Σ строк минус итог файла; null — сверять не с чем или сходится в копейку */
+  mismatch: string | null;
+  /** период вне границ ставки этой вкладки — при применении будет пропущен */
+  outOfPart: boolean;
   existingDocId: string | null;
   existingDocStatus: string | null;
 }
@@ -57,6 +69,8 @@ export interface ImportPreview {
   sections: { tmpId: string; parentTmpId: string | null; name: string; level: number; exists: boolean }[];
   items: ItemDiff[];
   ks2Columns: Ks2ColumnDiff[];
+  /** распознанная база сумм книги — предзаполнение переключателя в предпросмотре */
+  vat: ParsedImport['vat'];
   counts: { new: number; match: number; changed: number; missing: number };
   controls: ParsedImport['controls'] & {
     computedContractTotal: string;
@@ -202,6 +216,10 @@ export async function buildPreview(db: Db, importFileId: string): Promise<Import
   const docByNumber = new Map(existingDocs.map((d) => [norm(d.number), d]));
   const ks2Columns: Ks2ColumnDiff[] = parsed.ks2Columns.map((c) => {
     const ex = c.number ? docByNumber.get(norm(c.number)) : undefined;
+    const total = sumStrings(c.cells.map((cell) => cell.amount));
+    // сверка с итогом файла по этой же графе: расхождение видно поимённо по акту
+    const diff = c.fileTotal === null ? null : dec(total).sub(dec(c.fileTotal));
+    const mismatch = diff && diff.abs().gt(TOTALS_EPS) ? diff.toFixed(2) : null;
     return {
       index: c.index,
       label: c.label,
@@ -211,7 +229,10 @@ export async function buildPreview(db: Db, importFileId: string): Promise<Import
       periodFrom: c.periodFrom,
       periodTo: c.periodTo,
       cellCount: c.cells.length,
-      totalAmount: sumStrings(c.cells.map((cell) => cell.amount)),
+      totalAmount: total,
+      fileTotal: c.fileTotal,
+      mismatch,
+      outOfPart: !periodFitsPart(partCode, c.periodFrom, c.periodTo),
       existingDocId: ex?.id ?? null,
       existingDocStatus: ex?.status ?? null,
     };
@@ -247,6 +268,7 @@ export async function buildPreview(db: Db, importFileId: string): Promise<Import
     sections,
     items,
     ks2Columns,
+    vat: parsed.vat,
     counts,
     controls: {
       ...parsed.controls,
@@ -259,6 +281,39 @@ export async function buildPreview(db: Db, importFileId: string): Promise<Import
   };
 }
 
+/**
+ * Перевод разобранной книги из сумм без НДС в суммы с НДС на месте.
+ *
+ * Количества не трогаем — налог на них не начисляется. Контрольные суммы файла
+ * пересчитываем тоже: иначе сверка в гриде КС-6 сравнивала бы брутто-данные с
+ * нетто-эталоном и показывала расхождение размером ровно в налог.
+ */
+function grossUpParsed(parsed: ParsedImport, partCode: PartCode): void {
+  const fixed = partRate(partCode);
+  const rateFor = (onDate?: string | null) => fixed ?? vatRateOn(onDate);
+  const rate = rateFor(null);
+  const money = (v: string | null, on?: string | null) =>
+    v === null ? null : grossFromNetRate(v, rateFor(on));
+  const price = (v: string | null) => (v === null ? null : grossPriceFromNetRate(v, rate));
+
+  for (const i of parsed.items) {
+    i.unitPrice = price(i.unitPrice)!;
+    i.contractTotal = money(i.contractTotal)!;
+    i.materialUnitCost = price(i.materialUnitCost);
+    i.workUnitCost = price(i.workUnitCost);
+    i.fileExecutedTotal = money(i.fileExecutedTotal);
+  }
+  for (const c of parsed.ks2Columns) {
+    // у legacy ставка зависит от даты акта, поэтому пересчёт идёт по периоду
+    const on = c.periodTo ?? c.periodFrom ?? c.monthDate;
+    c.fileTotal = money(c.fileTotal, on);
+    for (const cell of c.cells) cell.amount = money(cell.amount, on)!;
+  }
+  parsed.controls.contractTotal = money(parsed.controls.contractTotal);
+  parsed.controls.executedTotal = money(parsed.controls.executedTotal);
+  parsed.vat = { rate, mode: 'gross' };
+}
+
 export interface ApplyOptions {
   /** применять изменения договорных значений по совпавшим строкам */
   applyChanged: boolean;
@@ -268,6 +323,13 @@ export interface ApplyOptions {
   overwriteKs2: boolean;
   /** импортированные КС-2 сразу утверждены (история — свершившийся факт) */
   approveImported: boolean;
+  /**
+   * База сумм в файле. `net` — книга дана без НДС (графы «Стоимость без НДС»),
+   * и суммы приводятся к с НДС по ставке вкладки: портал везде ведёт учёт с НДС.
+   * `gross` — оставить как есть. Значение подтверждает человек в предпросмотре,
+   * предзаполнено распознанным `parsed.vat.mode`.
+   */
+  vatMode: 'gross' | 'net';
   /** уточнения периодов по колонкам: index → реквизиты */
   periods: { index: number; number: string; periodFrom?: string | null; periodTo?: string | null; docDate?: string | null }[];
 }
@@ -318,6 +380,11 @@ export async function applyImportTx(
 
   const { existingItems, existingSections, existingDocs } = await loadExistingForPart(tx, part.id);
   const structureEmpty = existingItems.length === 0;
+
+  // Книга без НДС приводится к с НДС ОДИН раз здесь, а не в местах записи: так
+  // ни одна сумма не может уехать мимо пересчёта, и дальше по коду вид данных
+  // ровно один. Ставку берём у вкладки (partRate), для legacy — по дате периода.
+  if (options.vatMode === 'net') grossUpParsed(parsed, partCode);
 
   const periodOverrides = new Map(options.periods.map((p) => [p.index, p]));
 

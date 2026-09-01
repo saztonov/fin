@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 /** Версия парсера — пишется в import_files.parser_version. */
-export const PARSER_VERSION = '2.1.0';
+export const PARSER_VERSION = '2.2.0';
 
 /**
  * Допуск при сверке с контрольными суммами файла, рубли. Абсолютный, а не в
@@ -55,6 +55,12 @@ export const parsedKs2ColumnSchema = z.object({
   docDate: z.string().nullable(),
   periodFrom: z.string().nullable(),
   periodTo: z.string().nullable(),
+  /**
+   * Значение строки «Итого» файла в графе этого периода — готовый эталон на КС-2.
+   * Сверка с ним показывает не общее «суммы не бьются», а конкретный акт и сумму
+   * расхождения; именно она ловит задвоение разделов. null — итога в файле нет.
+   */
+  fileTotal: z.string().nullable().default(null),
   cells: z.array(
     z.object({
       itemTmpId: z.string(),
@@ -89,9 +95,12 @@ export const parsedImportSchema = z.object({
   items: z.array(parsedItemSchema),
   ks2Columns: z.array(parsedKs2ColumnSchema),
   controls: z.object({
-    /** «Итого, руб., в т.ч. НДС» по смете из файла */
+    /**
+     * Строка «Итого» по смете из файла — на той же базе НДС, что и графы листа:
+     * на листе «без НДС» берётся нетто-итог, а не «ИТОГО, в т.ч. НДС».
+     */
     contractTotal: z.string().nullable(),
-    /** «НДС 20%» из файла */
+    /** сумма самого налога — строка «НДС 20%»/«НДС 22%», а не итог с ним */
     vat: z.string().nullable(),
     /** контрольная колонка «Выполнение с нач. ст-ва» на строке Итого */
     executedTotal: z.string().nullable(),

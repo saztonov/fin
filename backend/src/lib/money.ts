@@ -108,6 +108,32 @@ export function netPriceFromGrossRate(price: Num, rate: number): string {
 }
 
 /**
+ * Обратный ход: сумма С НДС из суммы БЕЗ НДС. Нужен при импорте книг, где все
+ * графы даны без НДС («Стоимость без НДС» у Садовнической), а портал ведёт учёт
+ * с НДС. Складываем нетто и округлённый налог, а не умножаем на (100+rate)/100:
+ * так «без НДС» + «НДС» = «с НДС» до копейки — тот же инвариант, что и в
+ * netFromGrossRate, только с другой стороны.
+ */
+export function vatOnNetRate(amount: Num, rate: number): string {
+  if (!rate) return '0.00';
+  return round2(dec(amount).mul(rate).div(100));
+}
+
+export function grossFromNetRate(amount: Num, rate: number): string {
+  return round2(dec(round2(amount)).add(dec(vatOnNetRate(amount, rate))));
+}
+
+/**
+ * Цена за единицу с НДС — умножением, а не сложением с округлённым налогом:
+ * цена хранится с 6 знаками, и копеечное округление промежуточного НДС её
+ * испортило бы (зеркало netPriceFromGrossRate).
+ */
+export function grossPriceFromNetRate(price: Num, rate: number): string {
+  if (!rate) return round6(price);
+  return round6(dec(price).mul(100 + rate).div(100));
+}
+
+/**
  * Те же расчёты со ставкой по дате: до 31.12.2025 — 20%, с 01.01.2026 — 22%.
  * Используются для части `legacy`, где смета не разделена по ставкам.
  */

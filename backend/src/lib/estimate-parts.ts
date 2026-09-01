@@ -31,7 +31,15 @@ export function partSortOrder(code: PartCode): number {
 }
 
 /**
- * Попадает ли период в границы части: 20 % — по 31.12.2025, 22 % — с 01.01.2026.
+ * Попадает ли период в границы части. Принадлежность определяет КОНЕЦ периода:
+ * акт закрывается на его последнюю дату, по ставке, действующей на тот момент.
+ *
+ * Иначе период через границу («КС2№1 01.12.2025-18.02.2026» у Садовнической)
+ * не проходил бы ни во вкладку 20 % (кончается в 2026-м), ни во вкладку 22 %
+ * (начинается в 2025-м), и молча пропадал при импорте. При этом плановые графики
+ * 2026-2028 на листе «по 31.12.2025» (Сторис) вкладкой 20 % по-прежнему
+ * отвергаются: они целиком лежат за её границей.
+ *
  * Неизвестный период (обе даты пусты) не отвергаем: его дозаполняют вручную.
  */
 export function periodFitsPart(
@@ -40,8 +48,10 @@ export function periodFitsPart(
   periodTo: string | null | undefined,
 ): boolean {
   if (code === 'legacy') return true;
-  if (code === 'vat20') return !periodTo || periodTo <= VAT20_LAST_DAY;
-  return !periodFrom || periodFrom >= VAT22_FROM;
+  const end = periodTo || periodFrom;
+  if (!end) return true;
+  if (code === 'vat20') return end <= VAT20_LAST_DAY;
+  return end >= VAT22_FROM;
 }
 
 /**
@@ -65,8 +75,8 @@ export function assertPeriodFitsPart(
 
   throw ApiError.badRequest(
     code === 'vat20'
-      ? `Вкладка «${PART_TITLE.vat20}» закрывает периоды по 31.12.2025 — с 01.01.2026 действует ставка 22 %`
-      : `Вкладка «${PART_TITLE.vat22}» начинается с 01.01.2026 — более ранние периоды вносятся во вкладку «${PART_TITLE.vat20}»`,
+      ? `Вкладка «${PART_TITLE.vat20}» закрывает периоды, оканчивающиеся по 31.12.2025 — с 01.01.2026 действует ставка 22 %`
+      : `Вкладка «${PART_TITLE.vat22}» принимает периоды, оканчивающиеся с 01.01.2026 — более ранние вносятся во вкладку «${PART_TITLE.vat20}»`,
     'period_out_of_part',
   );
 }
@@ -80,7 +90,14 @@ export function baseYearOfPart(code: PartCode): number | null {
   return code === 'vat22' ? 2026 : null;
 }
 
-/** Часть, которой принадлежит период, — для разбора колонок книги при импорте. */
-export function partOfPeriod(periodFrom: string | null | undefined): SplitCode {
-  return periodFrom && periodFrom >= VAT22_FROM ? 'vat22' : 'vat20';
+/**
+ * Часть, которой принадлежит период, — для разбора колонок книги при импорте.
+ * Как и `periodFitsPart`, решает конец периода: акт закрывается на последнюю дату.
+ */
+export function partOfPeriod(
+  periodFrom: string | null | undefined,
+  periodTo?: string | null | undefined,
+): SplitCode {
+  const end = periodTo || periodFrom;
+  return end && end >= VAT22_FROM ? 'vat22' : 'vat20';
 }

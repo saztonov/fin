@@ -6,7 +6,7 @@
  * Поэтому перебираем окно строк и высоту блока, а выбираем вариант, в котором
  * распозналось больше всего логических полей.
  */
-import { classifyGroup, classifyHeader, type HeaderField } from './header-dictionary.js';
+import { classifyGroup, classifyHeader, normHeader, type HeaderField } from './header-dictionary.js';
 import { cellText } from './sheet-utils.js';
 import type { SheetGrid } from './xlsx-reader.js';
 
@@ -116,6 +116,36 @@ export function isGraphNumberRow(ws: SheetGrid, row: number, lastContractCol: nu
   return true;
 }
 
+/**
+ * Строка под шапкой, повторяющая её подписи. Встречается, когда шапка свёрстана
+ * объединениями на два ряда, а нижний ряд продублирован (Садовническая 69: строка 9
+ * повторяет строку 8). Без этой проверки повтор уезжает в позиции как работа
+ * «Наименование Работ» с ед. изм. «Ед. изм.».
+ */
+export function isHeaderEchoRow(
+  ws: SheetGrid,
+  row: number,
+  headerRow: number,
+  height: number,
+  lastContractCol: number,
+): boolean {
+  let same = 0;
+  for (let c = 1; c <= Math.min(lastContractCol, 40); c++) {
+    const below = normHeader(cellText(ws, row, c));
+    if (!below) continue;
+    let found = false;
+    for (let r = headerRow; r < headerRow + height; r++) {
+      if (normHeader(cellText(ws, r, c)) === below) {
+        found = true;
+        break;
+      }
+    }
+    if (!found) return false;
+    same += 1;
+  }
+  return same >= 3;
+}
+
 function evaluate(ws: SheetGrid, headerRow: number, height: number, maxCol: number): HeaderLayout | null {
   const texts = composeColumnTexts(ws, headerRow, height, maxCol);
   const cols: Partial<Record<HeaderField, number>> = {};
@@ -159,6 +189,7 @@ function evaluate(ws: SheetGrid, headerRow: number, height: number, maxCol: numb
   }
 
   let dataStartRow = headerRow + height;
+  if (isHeaderEchoRow(ws, dataStartRow, headerRow, height, lastContractCol)) dataStartRow += 1;
   if (isGraphNumberRow(ws, dataStartRow, lastContractCol)) dataStartRow += 1;
 
   // колонка «Уровень 1..7» бывает без заголовка — узнаём её по данным (Примавера)

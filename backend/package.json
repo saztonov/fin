@@ -13,7 +13,9 @@
     "dev:worker": "tsx watch src/worker/index.ts",
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "books:golden": "tsx src/scripts/books-golden.ts",
+    "books:golden:update": "tsx src/scripts/books-golden.ts --update"
   },
   "dependencies": {
     "@fastify/cookie": "^11.0.2",
