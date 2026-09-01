@@ -1,4 +1,5 @@
 import { ApiError } from './errors.js';
+import { vatRateOn } from './money.js';
 
 /** Код части сметы. `legacy` — единая смета, ставка НДС определяется датой. */
 export type PartCode = 'legacy' | 'vat20' | 'vat22';
@@ -88,6 +89,26 @@ export function assertPeriodFitsPart(
  */
 export function baseYearOfPart(code: PartCode): number | null {
   return code === 'vat22' ? 2026 : null;
+}
+
+/**
+ * Ставка НДС акта там, где её не задаёт вкладка, — то есть для части `legacy`.
+ *
+ * Решает КОНЕЦ периода: акт закрывается последней датой, по действующей на тот
+ * момент ставке. То же правило, что в `periodFitsPart` и `partOfPeriod`, и это
+ * важно — иначе акт через границу считался бы по разным ставкам в разных местах.
+ * «КС2№1 01.12.2025-18.02.2026» (Садовническая 69) закрыт в феврале 2026-го и
+ * обложен 22 %, как и написано в самой книге; по дате НАЧАЛА он получал бы 20 %,
+ * и режим «без НДС» завышал бы его нетто на 919 596 ₽.
+ *
+ * Дата документа — запасной вариант для актов, у которых период не заполнен.
+ */
+export function periodVatRate(
+  periodFrom: string | null | undefined,
+  periodTo: string | null | undefined,
+  docDate?: string | null | undefined,
+): number {
+  return vatRateOn(periodTo || periodFrom || docDate || null);
 }
 
 /**

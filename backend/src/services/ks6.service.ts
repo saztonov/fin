@@ -7,7 +7,7 @@ import {
   ks6Sections,
   workItems,
 } from '../db/schema/index.js';
-import type { PartCode } from '../lib/estimate-parts.js';
+import { periodVatRate, type PartCode } from '../lib/estimate-parts.js';
 import {
   add,
   dec,
@@ -218,14 +218,15 @@ export async function getKs6Grid(
 
   // Режим «без НДС»: суммы выделяются по ставке. У части со ставкой (vat20/vat22)
   // она своя и от дат не зависит: часть 22 % считается по 22 %, когда бы смета ни
-  // заводилась. У legacy ставку задаёт дата — по периоду для выполнения, а для
-  // договорных колонок периода нет, поэтому берётся действующая на сегодня
-  // (vatRateOn(null)): смета — это то, что ещё предстоит выполнить.
+  // заводилась. У legacy ставку задаёт дата — по КОНЦУ периода для выполнения
+  // (periodVatRate), а для договорных колонок периода нет, поэтому берётся
+  // действующая на сегодня (vatRateOn(null)): смета — это то, что ещё предстоит
+  // выполнить.
   const toNet = vatView === 'net';
   const partVatRate = activePart.vatRate ?? null;
   const contractRate = partVatRate ?? vatRateOn(null);
   const docRateById = new Map(
-    docs.map((d) => [d.id, partVatRate ?? vatRateOn(d.periodFrom ?? d.docDate)]),
+    docs.map((d) => [d.id, partVatRate ?? periodVatRate(d.periodFrom, d.periodTo, d.docDate)]),
   );
 
   const showContract = (amount: string): string =>
@@ -405,10 +406,10 @@ export async function getKs6Grid(
       : byPeriodTotals[doc.id]!;
   }
 
-  // Ставка документа — ставка части, а у legacy по дате периода (20 % до 31.12.2025,
-  // 22 % с 01.01.2026).
+  // Ставка документа — ставка части, а у legacy по концу периода (20 % до
+  // 31.12.2025, 22 % с 01.01.2026).
   const rateOfDoc = (d: (typeof docs)[number]) =>
-    docRateById.get(d.id) ?? vatRateOn(d.periodFrom ?? d.docDate ?? null);
+    docRateById.get(d.id) ?? periodVatRate(d.periodFrom, d.periodTo, d.docDate);
 
   const periods: PeriodInfo[] = docs.map((d) => {
     const gross = byPeriodGross[d.id] ?? '0.00';

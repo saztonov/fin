@@ -304,8 +304,11 @@ function grossUpParsed(parsed: ParsedImport, partCode: PartCode): void {
     i.fileExecutedTotal = money(i.fileExecutedTotal);
   }
   for (const c of parsed.ks2Columns) {
-    // у legacy ставка зависит от даты акта, поэтому пересчёт идёт по периоду
-    const on = c.periodTo ?? c.periodFrom ?? c.monthDate;
+    // У legacy ставка зависит от даты акта, и брать её надо ровно тем же правилом,
+    // каким грид и выгрузки её потом выделяют обратно (periodVatRate — по концу
+    // периода). Иначе акт через границу ставок начислялся бы по одной ставке, а
+    // разбирался по другой, и режим «без НДС» разъезжался бы с файлом.
+    const on = c.periodTo || c.periodFrom || c.monthDate;
     c.fileTotal = money(c.fileTotal, on);
     for (const cell of c.cells) cell.amount = money(cell.amount, on)!;
   }

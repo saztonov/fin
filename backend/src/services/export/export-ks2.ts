@@ -3,7 +3,8 @@ import { and, eq, isNull } from 'drizzle-orm';
 import type { Db } from '../../db/client.js';
 import { constructionObjects, estimateParts, ks2Documents } from '../../db/schema/index.js';
 import { ApiError } from '../../lib/errors.js';
-import { dec, sumStrings, vatFromGrossRate, vatRateOn } from '../../lib/money.js';
+import { periodVatRate } from '../../lib/estimate-parts.js';
+import { dec, sumStrings, vatFromGrossRate } from '../../lib/money.js';
 import { getKs6Grid } from '../ks6.service.js';
 import { sanitizeCellText } from './sanitize.js';
 
@@ -129,8 +130,8 @@ export async function exportKs2(db: Db, ks2Id: string): Promise<{ buffer: Buffer
   totalRow.getCell(7).value = Number(total);
   const vatRow = ws.getRow(rowNum + 1);
   // ставка части главнее даты: часть 22 % считается по 22 %, когда бы смета ни
-  // заводилась. Для legacy (часть без ставки) — по дате периода.
-  const rate = grid.activePart?.vatRate ?? vatRateOn(doc.periodFrom ?? doc.docDate ?? null);
+  // заводилась. Для legacy (часть без ставки) — по концу периода, как в гриде.
+  const rate = grid.activePart?.vatRate ?? periodVatRate(doc.periodFrom, doc.periodTo, doc.docDate);
   vatRow.getCell(3).value = rate ? `НДС ${rate}%` : 'НДС не облагается';
   vatRow.getCell(7).value = Number(vatFromGrossRate(total, rate));
   for (const r of [totalRow, vatRow]) {

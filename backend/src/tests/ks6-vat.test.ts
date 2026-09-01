@@ -4,9 +4,11 @@ import {
   partOfPeriod,
   partRate,
   periodFitsPart,
+  periodVatRate,
 } from '../lib/estimate-parts.js';
 import {
   netFromGross,
+  netFromGrossRate,
   netPriceFromGrossRate,
   sumStrings,
   vatFromGross,
@@ -75,6 +77,28 @@ describe('Ставка части сметы', () => {
   it('нулевая ставка ничего не выделяет', () => {
     expect(vatFromGrossRate('1200000.00', 0)).toBe('0.00');
     expect(netPriceFromGrossRate('1234.567890', 0)).toBe('1234.567890');
+  });
+});
+
+describe('Ставка НДС акта по концу периода', () => {
+  it('акт через 31.12.2025 считается по ставке на дату окончания', () => {
+    // «КС2№1 01.12.2025-18.02.2026» (Садовническая 69): книга обложена 22 %, и по
+    // дате начала портал брал бы 20 % — нетто завышалось на 919 596 ₽
+    expect(periodVatRate('2025-12-01', '2026-02-18')).toBe(22);
+    expect(periodVatRate('2025-11-01', '2025-12-31')).toBe(20);
+  });
+
+  it('без конца периода берётся начало, без обеих дат — дата документа', () => {
+    expect(periodVatRate('2026-03-01', null)).toBe(22);
+    expect(periodVatRate('2025-03-01', null)).toBe(20);
+    expect(periodVatRate(null, null, '2026-05-05')).toBe(22);
+  });
+
+  it('пересчёт нетто у акта через границу сходится с файлом', () => {
+    // брутто из БД по КС-2 №1; при 20 % нетто было бы 56 095 375,50
+    const gross = '67314450.60';
+    expect(netFromGrossRate(gross, periodVatRate('2025-12-01', '2026-02-18'))).toBe('55175779.18');
+    expect(netFromGrossRate(gross, 20)).toBe('56095375.50');
   });
 });
 

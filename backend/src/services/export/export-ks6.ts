@@ -3,7 +3,8 @@ import type { Db } from '../../db/client.js';
 import { constructionObjects } from '../../db/schema/index.js';
 import { and, eq, isNull } from 'drizzle-orm';
 import { ApiError } from '../../lib/errors.js';
-import { vatFromGross, vatRateOn } from '../../lib/money.js';
+import { periodVatRate } from '../../lib/estimate-parts.js';
+import { vatFromGrossRate } from '../../lib/money.js';
 import { getKs6Grid, type Ks6Grid } from '../ks6.service.js';
 import { sanitizeCellText } from './sanitize.js';
 
@@ -235,15 +236,20 @@ function writeKs6Sheet(
   totalRow.getCell(colRemAmt).value = toNumKeepZero(grid.totals.remainderAmount);
   totalRow.getCell(colTotAmt).value = toNumKeepZero(grid.totals.executedAmount);
   const vatRow = ws.getRow(rowNum + 1);
-  // ставка зависит от даты периода (20% до 31.12.2025, 22% с 01.01.2026),
+  // ставка зависит от конца периода (20% до 31.12.2025, 22% с 01.01.2026),
   // поэтому в подписи перечисляются все ставки, встреченные в документе
-  const rates = [...new Set(periods.map((p) => vatRateOn(p.periodFrom ?? p.docDate)))].sort();
+  const rates = [
+    ...new Set(periods.map((p) => periodVatRate(p.periodFrom, p.periodTo, p.docDate))),
+  ].sort();
   vatRow.getCell(3).value = `НДС ${rates.join('/')}%`;
   vatRow.getCell(9).value = toNumKeepZero(grid.totals.vatContract);
   vatRow.getCell(11).value = toNumKeepZero(grid.totals.vatExecuted);
   periods.forEach((p, i) => {
     vatRow.getCell(pairCol(i) + 1).value = toNumKeepZero(
-      vatFromGross(grid.totals.byPeriod[p.id] ?? '0', p.periodFrom ?? p.docDate),
+      vatFromGrossRate(
+        grid.totals.byPeriod[p.id] ?? '0',
+        periodVatRate(p.periodFrom, p.periodTo, p.docDate),
+      ),
     );
   });
   for (const r of [totalRow, vatRow]) {
